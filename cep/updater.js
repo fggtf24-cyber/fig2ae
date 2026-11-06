@@ -69,8 +69,10 @@ function unzip(zip, dest) {
   if (process.platform === 'win32') {
     cp.execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       "Expand-Archive -LiteralPath '" + zip.replace(/'/g, "''") + "' -DestinationPath '" + dest.replace(/'/g, "''") + "' -Force"], { windowsHide: true });
-  } else {
+  } else if (process.platform === 'darwin') {
     cp.execFileSync('ditto', ['-x', '-k', zip, dest]);
+  } else {
+    cp.execFileSync('unzip', ['-q', '-o', zip, '-d', dest]);            // tests on Linux
   }
 }
 
@@ -115,11 +117,30 @@ function check(current, opts) {
       var zip = await get(RAW + ASSET, path.join(tmp, ASSET));
       var out = path.join(tmp, 'x');
       unzip(zip, out);
-      if (!fs.existsSync(path.join(out, 'cep', 'CSXS', 'manifest.xml'))) throw new Error('the downloaded archive is not a Fig2AE build');
+      // the whole build must be there before anything is touched
+      var NEED = ['cep/CSXS/manifest.xml', 'cep/server.js', 'cep/runtime.js', 'cep/updater.js', 'cep/index.html',
+                  'cep/panel/index.html', 'cep/panel/panel.js', 'cep/panel/host.jsx',
+                  'figma-plugin/manifest.json', 'figma-plugin/code.js', 'figma-plugin/ui.html'];
+      NEED.forEach(function (f) {
+        var p = path.join(out, f);
+        if (!fs.existsSync(p) || fs.statSync(p).size === 0) throw new Error('the downloaded archive is incomplete (' + f + ')');
+      });
 
-      copyOver(path.join(out, 'cep'), opts.cepDir || __dirname);
+      // copy with a backup: if anything fails half-way, the old version is put back
       var inst = readJson(path.join(settingsDir(), 'install.json')) || {};
-      if (inst.figmaPlugin && fs.existsSync(path.join(out, 'figma-plugin'))) copyOver(path.join(out, 'figma-plugin'), inst.figmaPlugin);
+      var targets = [[path.join(out, 'cep'), opts.cepDir || __dirname]];
+      if (inst.figmaPlugin) targets.push([path.join(out, 'figma-plugin'), inst.figmaPlugin]);
+      var backups = [];
+      try {
+        targets.forEach(function (t, i) {
+          var b = path.join(tmp, 'backup' + i);
+          if (fs.existsSync(t[1])) { copyOver(t[1], b); backups.push([b, t[1]]); }
+        });
+        targets.forEach(function (t) { copyOver(t[0], t[1]); });
+      } catch (e) {
+        backups.forEach(function (b) { try { copyOver(b[0], b[1]); } catch (e2) {} });
+        throw new Error('update not installed, the old version was kept: ' + (e && e.message || e));
+      }
       var panel = path.join(out, 'ae', 'Fig2AE Panel.jsx');
       if (fs.existsSync(panel)) aeScriptFolders().forEach(function (d) { try { fs.mkdirSync(d, { recursive: true }); fs.copyFileSync(panel, path.join(d, 'Fig2AE.jsx')); } catch (e) {} });
       try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}

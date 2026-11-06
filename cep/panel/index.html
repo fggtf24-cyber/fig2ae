@@ -46,6 +46,8 @@
 
   .check { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; color: #c9c9c9; }
   .check:hover { color: #ececec; }
+  .check.sub { padding-left: 22px; }
+  .check.off { opacity: .4; pointer-events: none; }
   .box { width: 14px; height: 14px; border-radius: 2px; background: #454545; border: 1px solid #5c5c5c; display: inline-flex; align-items: center; justify-content: center; }
   .check.on .box { background: #7a7a7a; border-color: #7a7a7a; }
   .check.on .box::after { content: ''; width: 6px; height: 6px; background: #1e1e1e; border-radius: 1px; }
@@ -104,6 +106,7 @@
       </div>
       <div class="check" data-opt="parametric"><span class="box"></span>Detect parametric shapes</div>
       <div class="check" data-opt="precompGroups"><span class="box"></span>Precomp groups</div>
+      <div class="check sub" data-opt="groupNulls" title="Flat groups get a null that parents their layers"><span class="box"></span>Group nulls</div>
     </div>
   </section>
 

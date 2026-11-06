@@ -9,18 +9,20 @@
 
 ## Что нового в 0.4 — панель как в AEUX
 
-**Установка (Windows):** закрой After Effects → запусти `Install.cmd`.
+**Установка (Windows):** скачай и запусти `Fig2AE-Setup.exe` → «Установить».
 
 **Панель в After Effects** — Window → Extensions → **Fig2AE** (интерфейс и функции как у AEUX):
 - **+ New Comp / ↓ Current** — экспорт из Figma создаёт новую композицию или кладёт слои в текущую
-  (активную) композицию; фрейм центрируется в ней. Если активной композиции нет — создаётся новая.
+  (активную) композицию: фрейм центрируется, все слои начинаются там, где стоит курсор таймлайна,
+  прекомпы получают частоту кадров и длину этой композиции, референс прошлого импорта заменяется новым.
+  Если активной композиции нет — создаётся новая.
 - **Options**
   - *Image save path* — куда сохраняются экспорты и картинки (папка-кнопка / ✕ — сброс на `Документы/Fig2AE`).
   - *Detect parametric shapes* — прямоугольники и эллипсы приходят как Rectangle/Ellipse AE
     (Size и Roundness анимируются), а не как bezier-пути. Только где контур точно такой же:
     один радиус скругления, без corner smoothing, полный эллипс.
   - *Precomp groups* — каждая группа/фрейм Figma становится прекомпом. Выключено — группа остаётся
-    плоской, а её слои привязаны (parent) к null-слою с именем группы.
+    плоской; с галочкой *Group nulls* её слои привязаны (parent) к null-слою с именем группы.
 - **Groups** (работают с активной композицией)
   - *Precomp* — выделенные слои в прекомп, обрезанный по их границам; всё остаётся на месте.
   - *Un-Precomp* — слои выделенного прекомпа возвращаются в эту композицию на те же места
@@ -36,13 +38,13 @@
 
 ## Скачать, обновления, выпуск версии
 
-- **Скачать:** https://github.com/fggtf24-cyber/fig2ae/raw/main/Fig2AE.zip (то же на сайте Яйца Клауд).
-  Распаковать → закрыть After Effects → `Install.cmd`.
+- **Скачать:** https://github.com/fggtf24-cyber/fig2ae/raw/main/Fig2AE-Setup.exe (то же на сайте Яйца Клауд) —
+  один файл, кнопка «Установить», без прав администратора. Без exe: `Fig2AE.zip` → `Install.cmd`.
 - **Автообновление** (как у VoiceType): Fig2AE в After Effects через 20 секунд после запуска AE и потом каждые
   6 часов читает `version.txt` из ветки main. Если версия новее — скачивает `Fig2AE.zip` оттуда же и ставит поверх:
   расширение AE (после перезапуска AE), плагин Figma (со следующего запуска плагина), запасную панель.
   Выключается галочкой «Update automatically» в панели → System; там же «Check for updates».
-- **Выпустить версию:** `node make-release.js bump 0.4.1` → `npm test` → commit (вместе с `Fig2AE.zip` и `version.txt`) → push в main.
+- **Выпустить версию:** `node make-release.js bump 0.4.2` → `npm test` → commit (вместе с `Fig2AE-Setup.exe`, `Fig2AE.zip` и `version.txt`) → push в main.
 - Плагин Figma ставится в `%LOCALAPPDATA%\Fig2AE\figma-plugin` — импортировать в Figma оттуда, тогда его обновляет автообновление.
 
 ## Почему AEUX переносит криво (найдено в его исходниках)
@@ -138,20 +140,21 @@ Glass пропускается с предупреждением.
 
 ## Установка
 
-**Windows — `dist/Fig2AE-Setup.exe`**: обычный установщик, кнопка Install, без прав администратора.
-В конце показывает путь к `manifest.json` (кнопка «Copy path») для Figma: Plugins → Development →
+**Windows — `Fig2AE-Setup.exe`**: обычный установщик, кнопка «Установить», без прав администратора.
+В конце показывает путь к `manifest.json` (кнопка «Скопировать путь») для Figma: Plugins → Development →
 Import plugin from manifest…. Удаление — Параметры Windows → Приложения → Fig2AE.
 Exe не подписан: Windows SmartScreen может спросить — «Подробнее» → «Выполнить в любом случае».
 
-**macOS:** `node install.js` из `dist/Fig2AE-mac.zip`, плагин Figma — `figma-plugin/manifest.json` оттуда же.
+**macOS:** `node install.js` из `Fig2AE.zip`.
 
-Сборка обоих: `node make-installer.js` (exe компилируется `csc.exe`, который есть в любой Windows;
-`installer/Setup.cs`, файлы встроены ресурсом). `FIG2AE_TEST_ROOT=<папка>` уводит все пути и ключи реестра
+Сборка: `node make-release.js` (exe компилируется `csc.exe`, который есть в любой Windows, или mono `mcs`;
+`installer/Setup.cs`, `Fig2AE.zip` встроен ресурсом). `FIG2AE_TEST_ROOT=<папка>` уводит все пути и ключи реестра
 установщика в песочницу — так он проверялся (`/quiet`, `/uninstall`).
 
 Установщик ставит:
-- **Fig2AE Server** (`cep/`) в папку CEP-расширений пользователя — невидимая панель, стартует вместе с AE
-  (как сервер AEUX) и принимает экспорт из Figma на `localhost:7251`;
+- **Fig2AE для After Effects** (`cep/`) в папку CEP-расширений пользователя: невидимый сервер, стартует вместе с AE
+  (как сервер AEUX) и принимает экспорт из Figma на `localhost:7251`, и панель Window → Extensions → Fig2AE;
+- плагин Figma в `%LOCALAPPDATA%\\Fig2AE\\figma-plugin` и `%APPDATA%\\Fig2AE\\install.json` для автообновления;
 - `PlayerDebugMode = 1` для CSXS 9–16 (неподписанные расширения; только там, где ещё не стоит);
 - панель ручного импорта `Scripts/ScriptUI Panels/Fig2AE.jsx` в каждую версию AE и удаляет старый
   «сторож» `Scripts/Startup/Fig2AE Startup.jsx` прошлых версий.

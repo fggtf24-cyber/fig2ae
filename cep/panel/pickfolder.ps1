@@ -2,7 +2,7 @@
 # not the old tree-only "Browse For Folder" box. Prints the chosen path as UTF-8 base64 ('' = cancelled).
 param([string]$Start = '', [string]$Title = 'Where Fig2AE keeps exports and images')
 $ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
+$code = @'
 using System;
 using System.Runtime.InteropServices;
 public static class F2APick {
@@ -59,5 +59,16 @@ public static class F2APick {
     }
 }
 '@
+# compiled once and cached: compiling on every click costs 1-3 s
+$dll = Join-Path $env:LOCALAPPDATA 'Fig2AE\pickfolder-v1.dll'
+try {
+  if (-not (Test-Path $dll)) {
+    New-Item (Split-Path $dll) -ItemType Directory -Force | Out-Null
+    Add-Type -TypeDefinition $code -OutputAssembly $dll -OutputType Library
+  }
+  Add-Type -Path $dll
+} catch {
+  Add-Type -TypeDefinition $code
+}
 $p = [F2APick]::Pick($Title, $Start)
 [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($p)))

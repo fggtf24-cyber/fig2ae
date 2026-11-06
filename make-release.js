@@ -1,5 +1,8 @@
 /**
- * node make-release.js            -> Fig2AE.zip + version.txt in the repo root
+ * node make-release.js            -> Fig2AE-Setup.exe + Fig2AE.zip + version.txt in the repo root
+ *   Fig2AE-Setup.exe: the one-file installer (installer/Setup.cs, Fig2AE.zip inside as a resource);
+ *   built with csc.exe on Windows (ships with every Windows) or mono's mcs + mingw windres elsewhere.
+ *   Fig2AE.zip: what auto-update downloads.
  * node make-release.js bump 0.4.1 -> writes the version everywhere it lives, then builds
  *
  * Publishing (same scheme as VoiceType): commit Fig2AE.zip + version.txt and push to main.
@@ -25,6 +28,10 @@ if (process.argv[2] === 'bump') {
   Object.keys(FILES).forEach(function (f) {
     var p = path.join(ROOT, f), s = fs.readFileSync(p, 'utf8');
     s = s.replace(new RegExp(FILES[f].source, 'g'), function (m, old) { return m.replace(old, v); });
+    if (f === 'installer/Setup.cs') {
+      var am = path.join(ROOT, 'installer', 'app.manifest');
+      fs.writeFileSync(am, fs.readFileSync(am, 'utf8').replace(/(assemblyIdentity version=")[\d.]+/, '$1' + v + '.0'));
+    }
     if (f === 'cep/CSXS/manifest.xml') s = s.replace(/(Extension Id="com\.fig2ae\.\w+" Version=")[\d.]+/g, '$1' + v);
     fs.writeFileSync(p, s);
   });
@@ -56,5 +63,30 @@ if (process.platform === 'win32') {
 }
 fs.rmSync(stage, { recursive: true, force: true });
 fs.copyFileSync(zip, path.join(ROOT, 'Fig2AE.zip'));
+buildExe(path.join(ROOT, 'Fig2AE.zip'), path.join(ROOT, 'Fig2AE-Setup.exe'));
 fs.writeFileSync(path.join(ROOT, 'version.txt'), ver + '\n');
 console.log('Fig2AE.zip + version.txt  v' + ver + '  (' + Math.round(fs.statSync(zip).size / 1024) + ' KB)');
+
+function buildExe(payload, exe) {
+  var inst = path.join(ROOT, 'installer');
+  var refs = ['System.IO.Compression.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll'];
+  if (process.platform === 'win32') {
+    var csc = path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+    cp.execFileSync(csc, ['/nologo', '/target:winexe', '/optimize+', '/out:' + exe,
+      '/win32manifest:' + path.join(inst, 'app.manifest'), '/win32icon:' + path.join(inst, 'fig2ae.ico')]
+      .concat(refs.map(function (r) { return '/r:' + r; }), ['/resource:' + payload + ',Fig2AE.zip', path.join(inst, 'Setup.cs')]), { stdio: 'inherit' });
+  } else {
+    // mcs takes the manifest and the icon only as one compiled .res
+    var tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fig2ae-res-'));
+    fs.writeFileSync(path.join(tmp, 'setup.rc'), '1 24 "' + path.join(inst, 'app.manifest') + '"\n32512 ICON "' + path.join(inst, 'fig2ae.ico') + '"\n');
+    try {
+      cp.execFileSync('x86_64-w64-mingw32-windres', ['--preprocessor=cat', '-i', path.join(tmp, 'setup.rc'), '-O', 'res', '-o', path.join(tmp, 'setup.res')]);
+      cp.execFileSync('mcs', ['-nologo', '-target:winexe', '-optimize+', '-out:' + exe, '-win32res:' + path.join(tmp, 'setup.res')]
+        .concat(refs.map(function (r) { return '-r:' + r; }), ['-resource:' + payload + ',Fig2AE.zip', path.join(inst, 'Setup.cs')]), { stdio: 'inherit' });
+    } catch (e) {
+      console.error('Fig2AE-Setup.exe NOT built (needs mono-mcs + binutils-mingw-w64): ' + e.message);
+      process.exitCode = 1;
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  }
+  if (fs.existsSync(exe)) console.log('Fig2AE-Setup.exe  (' + Math.round(fs.statSync(exe).size / 1024) + ' KB)');
+}

@@ -99,7 +99,24 @@
                 mode = 'current';
                 var dx = (target.width - compSide(doc.comp.w, doc.comp.name)) / 2, dy = (target.height - compSide(doc.comp.h, doc.comp.name)) / 2;
                 if (dx || dy) for (var i = 0; i < doc.comp.layers.length; i++) shiftLayer(doc.comp.layers[i], dx, dy);
+                // precomps get the frame rate and length of the comp they go into
+                doc.fps = target.frameRate; doc.duration = target.duration;
+                // a new Figma reference replaces the one from the previous import
+                var hasRef = false;
+                for (var r = 0; r < doc.comp.layers.length; r++) if (doc.comp.layers[r].guide) hasRef = true;
+                if (hasRef) for (var q = target.numLayers; q >= 1; q--) {
+                    var old = target.layer(q);
+                    if (old.comment === REF_TAG) { old.locked = false; old.remove(); }
+                }
+                var n0 = target.numLayers, at = target.time;
                 fillComp(target, doc.comp, doc, projFolder);
+                // everything starts at the playhead (new layers are the top ones)
+                for (var t = 1; t <= target.numLayers - n0; t++) {
+                    var nl = target.layer(t), lk = nl.locked;
+                    if (lk) nl.locked = false;
+                    nl.startTime = at;
+                    if (lk) nl.locked = true;
+                }
                 comp = target;
             } else comp = buildComp(doc.comp, doc, projFolder);
             if (projFolder.numItems === 0) projFolder.remove();      // nothing went into the project panel
@@ -179,7 +196,7 @@
         // flattened Figma groups: parent their layers to the group null (keeps every layer where it is)
         for (var k = 0; k < ctx.kids.length; k++) {
             var lay = ctx.kids[k][0], nl = ctx.nulls[ctx.kids[k][1]];
-            if (!nl || lay === nl) continue;
+            if (!nl || lay.index === nl.index) continue;
             try {
                 var lk = lay.locked;
                 if (lk) lay.locked = false;
@@ -190,6 +207,7 @@
     }
 
     var groupCtx = [];
+    var REF_TAG = 'fig2ae:reference';
 
     function activeComp() {
         var a = app.project.activeItem;
@@ -261,7 +279,7 @@
             var m = buildLayer(c, L.matte.layer, doc, projFolder);     // lands directly above
             if (m) setMatte(lay, m, L.matte.mode);
         }
-        if (L.guide) lay.guideLayer = true;            // reference frame: visible in the viewer, never rendered
+        if (L.guide) { lay.guideLayer = true; lay.comment = REF_TAG; }   // reference frame: visible in the viewer, never rendered
         if (L.locked) lay.locked = true;    // last: a locked layer rejects edits
         return lay;
     }

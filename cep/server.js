@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.0';
+var VERSION = '0.4.1';
 var updater = require(path.join(__dirname, 'updater.js'));
 
 var PORT = 7251;
@@ -24,9 +24,10 @@ var BUSY = 'EvalScript error.';
  *   imagePath     where exports and their images are kept ('' = Documents/Fig2AE)
  *   parametric    rectangles/ellipses as AE parametric shapes
  *   precompGroups every Figma group/frame becomes a precomp (off: a null parents its layers)
+ *   groupNulls    a flattened group gets a null that parents its layers
  *   autoUpdate    install new GitHub releases by itself (updater.js)
  */
-var DEFAULTS = { target: 'new', imagePath: '', parametric: false, precompGroups: false, autoUpdate: true };
+var DEFAULTS = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true };
 function settingsDir() {
   return process.platform === 'win32' ? path.join(process.env.APPDATA || os.homedir(), 'Fig2AE')
                                       : path.join(os.homedir(), 'Library', 'Application Support', 'Fig2AE');
@@ -54,7 +55,7 @@ function importCode(file, opts) {
     'g.F2A_OPTS=' + JSON.stringify(opts || null) + ';' +
     'try{$.evalFile(new File(' + JSON.stringify(file.split(path.sep).join('/')) + '));}catch(e){err=String(e);}' +
     'g.F2A_QUIET=false;g.F2A_OPTS=null;var r=g.F2A_LAST;if(!r)return "ERR\\t"+err;' +
-    'return "OK\\t"+(r.comp?r.comp.name:"")+"\\t"+r.secs+"\\t"+r.log.join("\\u0001")+"\\t"+(r.mode||"new");})()';
+    'return "OK\\t"+(r.comp?r.comp.name:"")+"\\t"+r.secs+"\\t"+r.log.join("\\u0001").replace(/[\\t\\r\\n]+/g," ")+"\\t"+(r.mode||"new");})()';
 }
 
 function parseResult(out) {

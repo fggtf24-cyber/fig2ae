@@ -3,22 +3,12 @@
 
 INSTALL
 
-Windows (this folder, v0.4)
-  Close After Effects and run Install.cmd. Then:
+Windows
+  Run Fig2AE-Setup.exe and click «Установить» (or, from Fig2AE.zip: close After Effects, run Install.cmd). Then:
      - After Effects: Window > Extensions > Fig2AE opens the panel
        (New Comp / Current, options, group tools).
      - Figma: the plugin updates by itself if it was installed before; otherwise
        Plugins > Development > Import plugin from manifest... > figma-plugin\manifest.json.
-
-Windows (older Setup.exe build)
-  1. Run Fig2AE-Setup.exe and click Install.
-     (Windows may say "Windows protected your PC": click "More info" > "Run anyway".)
-  2. Follow the two steps the installer shows:
-     - After Effects: Edit > Preferences > Scripting & Expressions >
-       turn on "Allow Scripts to Write Files and Access Network" (once), restart AE.
-     - Figma desktop app: Plugins > Development > Import plugin from manifest...
-       and choose the file the installer shows (it has a "Copy path" button).
-  Uninstall: Windows Settings > Apps > Fig2AE.
 
 macOS
   1. Close After Effects.

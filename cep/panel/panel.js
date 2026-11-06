@@ -18,7 +18,7 @@
     fs = require('fs'); path = require('path'); os = require('os');
   } else {
     // browser preview without After Effects
-    var mem = { target: 'new', imagePath: '', parametric: false, precompGroups: false, autoUpdate: true };
+    var mem = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true };
     U = { state: function () { return {}; }, check: function () { return Promise.resolve({ status: 'error', error: 'preview' }); } };
     S = { readSettings: function () { return mem; }, writeSettings: function (o) { for (var k in o) mem[k] = o[k]; return mem; },
           settingsDir: function () { return ''; }, VERSION: '0.4.0' };
@@ -31,7 +31,9 @@
     });
   }
   function host(fn, arg) {
-    return evalHost('F2A_HOST.' + fn + '(' + (arg === undefined ? '' : JSON.stringify(arg)) + ')').then(function (r) {
+    // loads host.jsx when it is not there yet (the panel may have opened while an AE dialog blocked scripts)
+    var load = 'if (typeof F2A_HOST === "undefined") $.evalFile(' + JSON.stringify(dir + '/host.jsx') + ');';
+    return evalHost(load + 'F2A_HOST.' + fn + '(' + (arg === undefined ? '' : JSON.stringify(arg)) + ')').then(function (r) {
       var s = String(r), i = s.indexOf('\t');
       if (s === 'EvalScript error.') return { ok: false, msg: 'After Effects is busy (a dialog is open?)' };
       return { ok: s.slice(0, i) === 'OK', msg: i >= 0 ? s.slice(i + 1) : s };
@@ -44,7 +46,7 @@
   function defaultPath() { return hasNode ? path.join(os.homedir(), 'Documents', 'Fig2AE') : 'Documents/Fig2AE'; }
   function save(patch) {
     set = S.writeSettings(patch);
-    evalHost('F2A_HOST.saveOpts(' + JSON.stringify(JSON.stringify(set)) + ')');
+    host('saveOpts', JSON.stringify(set));
     render();
   }
   function render() {
@@ -55,7 +57,10 @@
     p.className = set.imagePath ? '' : 'def';
     p.title = p.textContent;
     var cs = document.querySelectorAll('.check');
-    for (var i = 0; i < cs.length; i++) cs[i].className = 'check' + (set[cs[i].getAttribute('data-opt')] ? ' on' : '');
+    for (var i = 0; i < cs.length; i++) {
+      var k = cs[i].getAttribute('data-opt');
+      cs[i].className = 'check' + (k === 'groupNulls' ? ' sub' + (set.precompGroups ? ' off' : '') : '') + (set[k] ? ' on' : '');
+    }
   }
 
   $('tNew').onclick = function () { save({ target: 'new' }); };

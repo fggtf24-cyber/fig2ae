@@ -24,6 +24,11 @@ $.global.F2A_HOST = (function () {
         if (lk) lay.locked = false;
         try { fn(); } finally { if (lk) lay.locked = true; }
     }
+    /** AE hands out a new wrapper per access: compare layers by comp + index, never with === */
+    function sameLayer(a, b) { return !!a && !!b && a.index === b.index && a.containingComp.id === b.containingComp.id; }
+    function ids(c) { var o = {}; for (var i = 1; i <= c.numLayers; i++) o[layerKey(c.layer(i))] = true; return o; }
+    function layerKey(L) { return typeof L.id === 'number' ? 'id' + L.id : null; }
+
     function animated(p) { return p.numKeys > 0 || (p.canSetExpression && p.expressionEnabled && p.expression !== ''); }
 
     /** moves an unparented layer by d (keyframes too; separated X/Y too) */
@@ -90,7 +95,7 @@ $.global.F2A_HOST = (function () {
             var name = lays.length === 1 ? top.name : top.name + ' group';
             var nc = c.layers.precompose(idx, name, true);
             var pl = null;
-            for (var j = 1; j <= c.numLayers; j++) if (c.layer(j).source === nc) { pl = c.layer(j); break; }
+            for (var j = 1; j <= c.numLayers; j++) { var sj = c.layer(j).source; if (sj && sj.id === nc.id) { pl = c.layer(j); break; } }
             if (b) {
                 var bx = Math.floor(b[0]), by = Math.floor(b[1]);
                 var w = Math.max(4, Math.min(30000, Math.ceil(b[2]) - bx)), h = Math.max(4, Math.min(30000, Math.ceil(b[3]) - by));
@@ -126,8 +131,17 @@ $.global.F2A_HOST = (function () {
     function unprecompOne(c, P, notes) {
         var src = P.source, n = src.numLayers, copies = [], i;
         if (!n) { unlocked(P, function () { P.remove(); }); return 0; }
-        // bottom first: every copy lands on top, so the stack keeps its order
-        for (i = n; i >= 1; i--) { src.layer(i).copyToComp(c); copies[i] = c.layer(1); }
+        // bottom first: every copy lands on top, so the stack keeps its order.
+        // The copy is found as the layer that was not there before (Layer.id, AE 22+), else layer 1.
+        for (i = n; i >= 1; i--) {
+            var before = ids(c), n0 = c.numLayers;
+            src.layer(i).copyToComp(c);
+            if (c.numLayers !== n0 + 1) throw new Error('After Effects did not copy "' + src.layer(i).name + '"');
+            copies[i] = c.layer(1);
+            if (layerKey(c.layer(1)) !== null) {
+                for (var q = 1; q <= c.numLayers; q++) if (!before[layerKey(c.layer(q))]) { copies[i] = c.layer(q); break; }
+            }
+        }
         for (i = 1; i <= n; i++) {
             var cp = copies[i];
             if (cp.locked) cp.locked = false;
@@ -141,7 +155,7 @@ $.global.F2A_HOST = (function () {
             else cpi.setParentWithJump(P);                       // precomp space -> P's transform
             // track mattes (AE 23+ keeps them by reference)
             try {
-                if (o.hasTrackMatte && o.trackMatteLayer && o.trackMatteLayer.containingComp === src)
+                if (o.hasTrackMatte && o.trackMatteLayer && o.trackMatteLayer.containingComp.id === src.id)
                     cpi.setTrackMatte(copies[o.trackMatteLayer.index], o.trackMatteType);
             } catch (e) {}
         }
@@ -199,7 +213,7 @@ $.global.F2A_HOST = (function () {
                 var N = nulls[k];
                 for (i = 1; i <= c.numLayers; i++) {
                     var L = c.layer(i);
-                    if (L.parent === N) (function (L) { unlocked(L, function () { L.parent = N.parent; }); kids++; })(L);
+                    if (sameLayer(L.parent, N)) (function (L) { unlocked(L, function () { L.parent = N.parent; }); kids++; })(L);
                 }
             }
             for (k = 0; k < nulls.length; k++) (function (N) { unlocked(N, function () { N.remove(); }); })(nulls[k]);
