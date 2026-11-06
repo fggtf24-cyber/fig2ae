@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.4';
+var VERSION = '0.4.5';
 var updater = require(path.join(__dirname, 'updater.js'));
 
 var PORT = 7251;

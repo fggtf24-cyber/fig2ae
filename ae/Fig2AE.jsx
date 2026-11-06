@@ -135,6 +135,10 @@
             var projFolder = app.project.items.addFolder('Fig2AE — ' + doc.comp.name);
             var target = opts.target === 'current' ? activeComp() : null;
             if (opts.target === 'current' && !target) note('"Current" is selected, but no composition is active — a new comp was created');
+            // While building, the viewer shows an empty 4×4 comp. Otherwise AE redraws the comp (and its timeline)
+            // shown in the viewer after every added layer, which makes big frames take minutes.
+            // Opened after reading the active comp: opening it makes it the active item.
+            openScratch();
             if (target) {
                 // like AEUX "Current": the layers go into the active comp, the frame centred in it
                 mode = 'current';
@@ -165,6 +169,7 @@
         } catch (e) {
             LOG.unshift('ERROR (line ' + e.line + '): ' + e.toString());
         }
+        closeScratch(comp);
         app.endUndoGroup();
         for (var fk in missingFonts) {
             var n = 0, names = [];
@@ -250,6 +255,21 @@
     }
 
     var groupCtx = [];
+    var SCRATCH = null;
+    function openScratch() {
+        try {
+            SCRATCH = app.project.items.addComp('Fig2AE · building…', 4, 4, 1, 1, 1);
+            SCRATCH.openInViewer();
+        } catch (e) { SCRATCH = null; }
+    }
+    /** back to the scratch comp after something had to be the active comp (gradient presets) */
+    function showScratch() { if (SCRATCH) try { SCRATCH.openInViewer(); } catch (e) {} }
+    function closeScratch(result) {
+        if (!SCRATCH) return;
+        try { if (result) result.openInViewer(); } catch (e) {}
+        try { SCRATCH.remove(); } catch (e) {}
+        SCRATCH = null;
+    }
     var REF_TAG = 'fig2ae:reference';
 
     function activeComp() {
@@ -578,7 +598,7 @@
         var file = new File(Folder.temp.fsName + '/fig2ae_grad_' + (++gradSeq) + '.ffx');
         writeBinary(file, G.gradientFfx(stops, gIndex - 1, iIndex - 1));
         try {
-            if (!openedComps[c.id]) { c.openInViewer(); openedComps[c.id] = true; }  // presets apply to the active comp
+            if (SCRATCH || !openedComps[c.id]) { c.openInViewer(); openedComps[c.id] = true; }  // presets apply to the active comp
             var sel = c.selectedLayers;
             for (var i = 0; i < sel.length; i++) sel[i].selected = false;
             var props = c.selectedProperties;
@@ -594,6 +614,7 @@
             note('Layer "' + lay.name + '": could not apply the gradient colours (' + e + ')');
         } finally {
             try { file.remove(); } catch (e2) {}
+            showScratch();
         }
     }
 
