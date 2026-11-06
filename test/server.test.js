@@ -1,0 +1,68 @@
+/**
+ * node test/server.test.js
+ * cep/server.js with a fake AE: the export lands in its own folder, AE busy with
+ * a modal dialog is waited out, the import result goes back to the Figma plugin.
+ */
+var assert = require('assert');
+var fs = require('fs');
+var os = require('os');
+var path = require('path');
+var http = require('http');
+var srv = require('../cep/server.js');
+
+var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fig2ae-srv-'));
+var calls = [];
+var server = srv.start(function (code) {
+  calls.push(code);
+  // first call: a modal dialog is open in AE
+  return Promise.resolve(calls.length === 1 ? srv.BUSY : 'OK\tКомпозиция\t1.5\tпервое\u0001второе');
+}, { port: 0, dir: dir, retryMs: 10 });
+
+server.on('listening', function () {
+  var port = server.address().port;
+  var body = JSON.stringify({ app: 'fig2ae', v: 3, comp: { name: 'Карточка', w: 10, h: 10, layers: [] }, warnings: [] });
+  var req = http.request({ host: '127.0.0.1', port: port, method: 'POST', path: '/import?name=' + encodeURIComponent('fig2ae_Карточка.jsx'),
+                           headers: { 'Content-Type': 'text/plain;charset=utf-8' } }, function (res) {
+    var data = '';
+    res.setEncoding('utf8');
+    res.on('data', function (c) { data += c; });
+    res.on('end', function () {
+      try {
+        assert.strictEqual(res.headers['access-control-allow-origin'], '*');
+        var r = JSON.parse(data);
+        assert.strictEqual(r.ok, true, data);
+        assert.strictEqual(r.comp, 'Композиция');
+        assert.deepStrictEqual(r.log, ['первое', 'второе']);
+        assert.strictEqual(calls.length, 2, 'занятый AE должен переспрашиваться');
+        assert.strictEqual(path.basename(r.file), 'fig2ae_Карточка.jsx');
+        assert.strictEqual(path.dirname(path.dirname(r.file)), dir, 'каждый экспорт — в своей папке');
+        var jsx = fs.readFileSync(r.file, 'utf8');
+        assert.ok(jsx.indexOf('﻿// Fig2AE') === 0 && jsx.indexOf('var F2A_DATA = ') > 0 && jsx.indexOf('F2A-PAYLOAD-END') > 0, 'сервер сам собирает .jsx из данных');
+        assert.ok(calls[1].indexOf(JSON.stringify(r.file.split(path.sep).join('/'))) > 0, 'AE получает путь к файлу');
+        assert.deepStrictEqual(srv.parseResult('ERR\tboom'), { ok: false, error: 'boom' });
+        rejectCode(port, function () {
+          console.log('server: all checks passed');
+          server.close();
+          fs.rmSync(dir, { recursive: true, force: true });
+        });
+        return;
+      } catch (e) { console.error(e); process.exitCode = 1; }
+      server.close();
+    });
+  });
+  req.end(body);
+});
+
+// code instead of data (any web page can POST to localhost) is refused and never reaches AE
+function rejectCode(port, done) {
+  var n = calls.length;
+  var req = http.request({ host: '127.0.0.1', port: port, method: 'POST', path: '/import?name=fig2ae_x.jsx' }, function (res) {
+    res.resume();
+    res.on('end', function () {
+      try { assert.strictEqual(res.statusCode, 400); assert.strictEqual(calls.length, n, 'чужой код не должен попасть в AE'); }
+      catch (e) { console.error(e); process.exitCode = 1; }
+      done();
+    });
+  });
+  req.end('app.project.close(); system.callSystem("calc");');
+}

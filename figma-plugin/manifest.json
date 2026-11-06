@@ -1,0 +1,12 @@
+{
+  "name": "Fig2AE",
+  "id": "fig2ae",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["none"],
+    "devAllowedDomains": ["http://localhost:7251"]
+  }
+}

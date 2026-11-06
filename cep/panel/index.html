@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fig2AE</title>
+<style>
+  :root {
+    --bg: #232323; --row: #2a2a2a; --row-hi: #333333; --row-on: #3c3c3c; --line: #2f2f2f;
+    --text: #d4d4d4; --muted: #8f8f8f; --dim: #6b6b6b; --accent: #2d8ceb; --ok: #4fb477; --err: #e5675b; --warn: #d9a14a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 12px/1.4 "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; -webkit-font-smoothing: antialiased; user-select: none; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  main { flex: 1; overflow-y: auto; overflow-x: hidden; padding-bottom: 8px; }
+  main::-webkit-scrollbar { width: 8px; } main::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 4px; }
+  svg { width: 14px; height: 14px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+  header { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; }
+  header b { font-weight: 600; letter-spacing: .02em; }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: 4px;
+    background: transparent; color: var(--muted); cursor: pointer; padding: 0; }
+  .icon-btn:hover { background: var(--row-hi); color: var(--text); }
+
+  .seg { position: relative; display: flex; justify-content: center; padding: 10px 10px 12px; }
+  .seg #menuBtn { position: absolute; left: 8px; top: 12px; }
+  .seg > div { display: inline-flex; background: var(--row); border-radius: 4px; padding: 0; overflow: hidden; }
+  .seg button { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 13px; border: 0; background: transparent;
+    color: var(--muted); font: inherit; cursor: pointer; }
+  .seg button:hover { color: var(--text); background: var(--row-hi); }
+  .seg button.on { background: var(--row-on); color: #f0f0f0; }
+
+  section { border-top: 1px solid var(--line); }
+  .sec-h { display: flex; align-items: center; justify-content: space-between; padding: 9px 10px; cursor: pointer;
+    font-size: 11px; font-weight: 600; letter-spacing: .12em; color: #bdbdbd; text-transform: uppercase; }
+  .sec-h:hover { color: #e6e6e6; }
+  .sec-h svg { transition: transform .15s; color: var(--muted); }
+  section.closed .sec-h svg { transform: rotate(-90deg); }
+  section.closed .sec-b { display: none; }
+  .sec-b { padding: 0 10px 10px; }
+
+  label.lbl { display: block; color: var(--muted); margin: 2px 0 3px; font-size: 11px; }
+  .path { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid #5a5a5a; padding: 2px 0 3px; margin-bottom: 10px; }
+  .path span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-size: 11.5px; }
+  .path span.def { color: var(--dim); }
+
+  .check { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; color: #c9c9c9; }
+  .check:hover { color: #ececec; }
+  .box { width: 14px; height: 14px; border-radius: 2px; background: #454545; border: 1px solid #5c5c5c; display: inline-flex; align-items: center; justify-content: center; }
+  .check.on .box { background: #7a7a7a; border-color: #7a7a7a; }
+  .check.on .box::after { content: ''; width: 6px; height: 6px; background: #1e1e1e; border-radius: 1px; }
+
+  .act { display: flex; align-items: center; gap: 9px; width: 100%; height: 28px; padding: 0 9px; margin-bottom: 4px; border: 0; border-radius: 3px;
+    background: var(--row); color: #d0d0d0; font: inherit; text-align: left; cursor: pointer; }
+  .act:hover { background: var(--row-hi); color: #fff; }
+  .act:active { background: var(--row-on); }
+  .act svg { color: #bdbdbd; }
+
+  .kv { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; color: var(--muted); }
+  .kv b { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--dim); }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--err); }
+  #warns { margin: 6px 0 8px; max-height: 160px; overflow: auto; }
+  #warns div { font-size: 11px; color: #c9b38a; background: #2b2722; border-radius: 3px; padding: 4px 6px; margin-bottom: 3px; user-select: text; }
+  .ver { color: var(--dim); font-size: 11px; margin-top: 6px; }
+
+  #toast { padding: 7px 10px; font-size: 11.5px; border-top: 1px solid var(--line); color: var(--muted); min-height: 30px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #toast.ok { color: var(--ok); } #toast.err { color: var(--err); }
+
+  #menu { position: absolute; top: 40px; left: 8px; z-index: 10; background: #2e2e2e; border: 1px solid #3c3c3c; border-radius: 5px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.45); padding: 4px; min-width: 190px; display: none; }
+  #menu.open { display: block; }
+  #menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 8px; border: 0; border-radius: 3px; background: transparent;
+    color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+  #menu button:hover { background: var(--accent); color: #fff; }
+  #menu hr { border: 0; border-top: 1px solid #3c3c3c; margin: 4px 2px; }
+</style>
+</head>
+<body>
+<div id="menu">
+  <button data-cmd="importFile"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14l3 3 3-3"/></svg>Import export file…</button>
+  <button data-cmd="openFolder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open exports folder</button>
+  <hr>
+  <button data-cmd="reload"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg>Reload panel</button>
+</div>
+
+<main>
+  <div class="seg">
+    <button class="icon-btn" id="menuBtn" title="Menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    <div>
+    <button id="tNew"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New Comp</button>
+    <button id="tCur"><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>Current</button>
+  </div></div>
+
+  <section id="sOptions">
+    <div class="sec-h">Options<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
+    <div class="sec-b">
+      <label class="lbl">Image save path:</label>
+      <div class="path">
+        <span id="pathText"></span>
+        <button class="icon-btn" id="pathPick" title="Choose folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+        <button class="icon-btn" id="pathClear" title="Reset to default"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <div class="check" data-opt="parametric"><span class="box"></span>Detect parametric shapes</div>
+      <div class="check" data-opt="precompGroups"><span class="box"></span>Precomp groups</div>
+    </div>
+  </section>
+
+  <section id="sGroups">
+    <div class="sec-h">Groups<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
+    <div class="sec-b">
+      <button class="act" data-host="precomp"><svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>Precomp</button>
+      <button class="act" data-host="unprecomp"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5M4 4l5 5M20 4l-5 5M4 20l5-5M20 20l-5-5"/></svg>Un-Precomp</button>
+      <button class="act" data-host="toggleGuides"><svg viewBox="0 0 24 24"><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c5 0 9 4.5 10 7a13 13 0 0 1-2.4 3.3M6.6 6.6C4.3 8 2.7 10.2 2 12c1 2.5 5 7 10 7 1.9 0 3.6-.6 5-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>Toggle guide layer visibility</button>
+      <button class="act" data-host="deleteGroups"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>Delete group layers</button>
+    </div>
+  </section>
+
+  <section id="sSystem" class="closed">
+    <div class="sec-h">System<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
+    <div class="sec-b">
+      <div class="kv">Server <b><span class="dot" id="srvDot"></span><span id="srvText">checking…</span></b></div>
+      <div class="kv">Last import <b id="lastText">—</b></div>
+      <div id="warns"></div>
+      <div class="kv">Version <b id="updText">—</b></div>
+      <div class="check" data-opt="autoUpdate"><span class="box"></span>Update automatically</div>
+      <button class="act" id="updBtn"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg><span id="updBtnText">Check for updates</span></button>
+      <button class="act" data-cmd="importFile"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14l3 3 3-3"/></svg>Import export file…</button>
+      <button class="act" data-cmd="openFolder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open exports folder</button>
+          </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script src="panel.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fig2AE Server</title>
+<script>
+  // hidden extension: starts with After Effects, see server.js
+  var here = decodeURIComponent(location.pathname).replace(/^\/([A-Za-z]:)/, '$1');
+  var server = require(here.slice(0, here.lastIndexOf('/')) + '/server.js');
+  server.start(function (code) {
+    return new Promise(function (resolve) { window.__adobe_cep__.evalScript(code, resolve); });
+  }).on('error', function (e) { console.error('Fig2AE server: ' + e.message); });
+</script>
