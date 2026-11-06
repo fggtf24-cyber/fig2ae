@@ -1,10 +1,10 @@
 /**
- * node make-release.js            -> dist/Fig2AE.zip (what the site offers and auto-update installs)
+ * node make-release.js            -> Fig2AE.zip + version.txt in the repo root
  * node make-release.js bump 0.4.1 -> writes the version everywhere it lives, then builds
  *
- * Publishing: commit, then `git tag v0.4.1 && git push --tags` — the GitHub Actions workflow
- * (.github/workflows/release.yml) runs the tests and attaches Fig2AE.zip to a release.
- * Every installed Fig2AE picks the release up by itself (cep/updater.js).
+ * Publishing (same scheme as VoiceType): commit Fig2AE.zip + version.txt and push to main.
+ * The site links to github.com/brlk33/fig2ae/raw/main/Fig2AE.zip; every installed Fig2AE
+ * sees the new version.txt and updates itself (cep/updater.js).
  */
 var fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');
 var build = require('./build.js');
@@ -55,4 +55,6 @@ if (process.platform === 'win32') {
   cp.execFileSync('zip', ['-qr', zip, '.'], { cwd: stage });
 }
 fs.rmSync(stage, { recursive: true, force: true });
-console.log('dist/Fig2AE.zip  v' + ver + '  (' + Math.round(fs.statSync(zip).size / 1024) + ' KB)');
+fs.copyFileSync(zip, path.join(ROOT, 'Fig2AE.zip'));
+fs.writeFileSync(path.join(ROOT, 'version.txt'), ver + '\n');
+console.log('Fig2AE.zip + version.txt  v' + ver + '  (' + Math.round(fs.statSync(zip).size / 1024) + ' KB)');

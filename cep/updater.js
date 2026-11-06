@@ -2,8 +2,8 @@
  * Fig2AE auto-update. Runs inside After Effects (the hidden server checks on start
  * and every 6 hours; the panel has "Check for updates").
  *
- * Source of truth: the latest GitHub release of REPO, asset Fig2AE.zip (built by
- * make-release.js / the GitHub Actions workflow on every v* tag). A newer release is
+ * Same scheme as VoiceType: the main branch of REPO holds version.txt and the built
+ * Fig2AE.zip (make-release.js). When version.txt on GitHub is newer, Fig2AE.zip is
  * downloaded and unpacked over the installed copy:
  *   cep/          -> this extension's folder (takes effect after After Effects restarts)
  *   figma-plugin/ -> the Figma plugin folder written by install.ps1 / install.js (next plugin run)
@@ -12,7 +12,9 @@
  */
 var https = require('https'), fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');
 
-var REPO = 'fggtf24-cyber/fig2ae';
+var REPO = 'brlk33/fig2ae';
+var BRANCH = 'main';
+var RAW = 'https://raw.githubusercontent.com/' + REPO + '/' + BRANCH + '/';
 var ASSET = 'Fig2AE.zip';
 
 function settingsDir() {
@@ -36,13 +38,13 @@ function newer(a, b) {
   return false;
 }
 
-function get(url, asFile, hops) {
+function get(url, asFile, hops, asText) {
   return new Promise(function (resolve, reject) {
-    var req = https.get(url, { headers: { 'User-Agent': 'Fig2AE-updater', 'Accept': asFile ? 'application/octet-stream' : 'application/vnd.github+json' } }, function (res) {
+    var req = https.get(url + (asText ? (url.indexOf('?') < 0 ? '?' : '&') + 't=' + Date.now() : ''), { headers: { 'User-Agent': 'Fig2AE-updater', 'Accept': asFile ? 'application/octet-stream' : 'application/vnd.github+json' } }, function (res) {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         if ((hops || 0) > 5) return reject(new Error('too many redirects'));
-        return resolve(get(res.headers.location, asFile, (hops || 0) + 1));
+        return resolve(get(res.headers.location, asFile, (hops || 0) + 1, asText));
       }
       if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode + ' for ' + url)); }
       if (asFile) {
@@ -54,7 +56,7 @@ function get(url, asFile, hops) {
         var d = '';
         res.setEncoding('utf8');
         res.on('data', function (c) { d += c; });
-        res.on('end', function () { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
+        res.on('end', function () { if (asText) return resolve(d); try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
       }
     });
     req.setTimeout(60000, function () { req.destroy(new Error('timeout')); });
@@ -100,19 +102,17 @@ function check(current, opts) {
   running = (async function () {
     var s = { current: current, time: Date.now() };
     try {
-      var rel = await get('https://api.github.com/repos/' + REPO + '/releases/latest');
-      s.latest = String(rel.tag_name || '').replace(/^v/, '');
-      s.notes = String(rel.body || '').slice(0, 2000);
-      s.url = rel.html_url;
-      if (!s.latest || !newer(s.latest, current)) { s.status = 'latest'; return writeState(s); }
+      var txt = await get(RAW + 'version.txt', null, 0, true);
+      s.latest = String(txt).trim();
+      s.url = 'https://github.com/' + REPO;
+      if (!/^\d+(\.\d+)*$/.test(s.latest)) throw new Error('bad version.txt on GitHub: ' + s.latest.slice(0, 40));
+      if (!newer(s.latest, current)) { s.status = 'latest'; return writeState(s); }
       var prev = state();
       if (prev.status === 'installed' && prev.latest === s.latest) { s.status = 'installed'; return writeState(s); }   // waiting for an AE restart
-      var asset = (rel.assets || []).filter(function (a) { return a.name === ASSET; })[0];
-      if (!asset) throw new Error('release ' + s.latest + ' has no ' + ASSET);
       if (opts.install === false) { s.status = 'available'; return writeState(s); }
 
       var tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fig2ae-update-'));
-      var zip = await get(asset.browser_download_url, path.join(tmp, ASSET));
+      var zip = await get(RAW + ASSET, path.join(tmp, ASSET));
       var out = path.join(tmp, 'x');
       unzip(zip, out);
       if (!fs.existsSync(path.join(out, 'cep', 'CSXS', 'manifest.xml'))) throw new Error('the downloaded archive is not a Fig2AE build');
