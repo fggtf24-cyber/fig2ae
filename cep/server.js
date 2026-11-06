@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.3';
+var VERSION = '0.4.4';
 var updater = require(path.join(__dirname, 'updater.js'));
 
 var PORT = 7251;
@@ -154,6 +154,12 @@ function start(evalHost, opts) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    if (req.method === 'GET' && /^\/progress\b/.test(req.url)) {     // the importer writes it while building (Fig2AE.jsx)
+      var pr = null;
+      try { pr = JSON.parse(fs.readFileSync(path.join(settingsDir(), 'progress.json'), 'utf8')); } catch (e) {}
+      send(res, 200, { ok: true, progress: pr });
+      return;
+    }
     if (req.method === 'GET' && /^\/log\b/.test(req.url)) {
       send(res, 200, { ok: true, app: 'fig2ae', version: VERSION, platform: process.platform + ' ' + os.release(), node: process.version,
                        settings: readSettings(settingsFile), update: updater.state(), events: LOG });
@@ -188,6 +194,16 @@ function start(evalHost, opts) {
       });
     };
     logEvent('start', 'Fig2AE ' + VERSION + ' server started');
+    // an import that was still running when After Effects went away (crash, or closed while it looked frozen)
+    try {
+      var pf = path.join(settingsDir(), 'progress.json'), pr = JSON.parse(fs.readFileSync(pf, 'utf8'));
+      if (pr.state === 'running') {
+        logEvent('error', 'the previous import did not finish: After Effects closed or crashed at layer ' + pr.n + ' of ' + pr.total +
+                 ' ("' + pr.layer + '") of "' + pr.comp + '", ' + Math.round((Date.now() - pr.t) / 60000) + ' min ago', pr);
+        pr.state = 'abandoned';
+        fs.writeFileSync(pf, JSON.stringify(pr));
+      }
+    } catch (e) {}
     process.on('uncaughtException', function (e) { logEvent('error', 'uncaught exception', errInfo(e)); });
     process.on('unhandledRejection', function (e) { logEvent('error', 'unhandled rejection', errInfo(e)); });
     setTimeout(auto, 20 * 1000);

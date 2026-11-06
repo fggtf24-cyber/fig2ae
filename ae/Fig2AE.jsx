@@ -79,7 +79,48 @@
     }
 
     /** the whole import; also the entry point for tests */
+    /**
+     * <user data>/Fig2AE/progress.json, every 15 layers: the Figma plugin shows "N / total",
+     * and if After Effects dies mid-import the server reports where it stopped.
+     */
+    var PROG = null;
+    function countDoc(ls) {
+        var n = 0;
+        for (var i = 0; i < ls.length; i++) {
+            var l = ls[i]; if (!l) continue;
+            n++;
+            if (l.matte) n += countDoc([l.type === 'bgblur' ? l.matte : l.matte.layer]);
+            if (l.comp) n += countDoc(l.comp.layers);
+        }
+        return n;
+    }
+    function jstr(v) {
+        return '"' + String(v).replace(/[\\"]/g, '\\$&').replace(/[\u0000-\u001f\u2028\u2029]/g, function (c) {
+            return '\\u' + ('000' + c.charCodeAt(0).toString(16)).slice(-4);
+        }) + '"';
+    }
+    function writeProgress(state, name) {
+        if (!PROG) return;
+        try {
+            var d = new Folder(Folder.userData.fsName + '/Fig2AE');
+            if (!d.exists) d.create();
+            var f = new File(d.fsName + '/progress.json');
+            f.encoding = 'UTF-8';
+            if (!f.open('w')) return;
+            f.write('{"state":"' + state + '","n":' + PROG.n + ',"total":' + PROG.total + ',"t":' + new Date().getTime() +
+                    ',"comp":' + jstr(PROG.comp) + ',"layer":' + jstr(name || '') + '}');
+            f.close();
+        } catch (e) {}
+    }
+    function progress(L) {
+        if (!PROG) return;
+        PROG.n++;
+        if (PROG.n === 1 || PROG.n % 15 === 0) writeProgress('running', L.name);
+    }
+
     function importDoc(doc, assetsFolder) {
+        PROG = { n: 0, total: countDoc(doc.comp.layers), comp: doc.comp.name || '' };
+        writeProgress('running', '');
         LOG = [];
         missingFonts = {};
         assets = assetsFolder;
@@ -131,6 +172,8 @@
             LOG.unshift('Font "' + fk + '" is not installed — replaced with "' + missingFonts[fk].sub + '" (' + n + ' layer(s): ' +
                         names.join(', ') + (n > 3 ? '…' : '') + '). Install the font and import again for an exact match.');
         }
+        writeProgress('done', '');
+        PROG = null;
         return { comp: comp, mode: mode, log: LOG, secs: (new Date().getTime() - t0) / 1000 };
     }
 
@@ -234,6 +277,7 @@
     }
 
     function buildLayer(c, L, doc, projFolder) {
+        progress(L);
         if (L.type === 'bgblur') return buildBgBlur(c, L, doc, projFolder);
 
         var lay;

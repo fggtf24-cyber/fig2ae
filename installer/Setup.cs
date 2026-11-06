@@ -21,7 +21,7 @@ using Microsoft.Win32;
 
 static class Setup
 {
-    public const string Version = "0.4.3";
+    public const string Version = "0.4.4";
     static string LocalApp, RoamingApp, RegRoot;
 
     public static string AppDir { get { return Path.Combine(LocalApp, "Fig2AE"); } }
