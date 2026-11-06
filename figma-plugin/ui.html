@@ -143,7 +143,7 @@
 
 <div id="log"></div>
 <div class="foot">
-  <span class="foot-l"><span>v0.4.5</span>
+  <span class="foot-l"><span>v0.4.6</span>
     <button class="logbtn" id="logBtn" title="Copy the diagnostic log">
       <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg><span id="logBtnText">Log</span>
     </button></span>
@@ -215,6 +215,12 @@
   var st = { ref: false, hidden: false };
   var ae = null;                      // panel settings from AE, null = not reachable
   var aeUpdate = null;                // auto-update state from AE
+  var aeVersion = null;               // Fig2AE version running in AE (newer than this window = the plugin files were updated)
+  function newerThan(a, b) {
+    a = String(a).split('.'); b = String(b).split('.');
+    for (var i = 0; i < Math.max(a.length, b.length); i++) { var x = +a[i] || 0, y = +b[i] || 0; if (x !== y) return x > y; }
+    return false;
+  }
 
   /* ---------- size: the plugin window follows the content */
   function fit() { parent.postMessage({ pluginMessage: { type: 'resize', h: Math.min(640, document.body.scrollHeight + 2) } }, '*'); }
@@ -251,7 +257,7 @@
     return new Promise(function (resolve) {
       var done = false, t = setTimeout(function () { if (!done) { done = true; resolve(null); } }, ms || 1200);
       fetch(AE_URL + '/').then(function (r) { return r.json(); }).then(function (r) {
-        if (done) return; done = true; clearTimeout(t); aeUpdate = r && r.update; resolve(r && r.app === 'fig2ae' ? (r.settings || {}) : null);
+        if (done) return; done = true; clearTimeout(t); aeUpdate = r && r.update; aeVersion = r && r.version; resolve(r && r.app === 'fig2ae' ? (r.settings || {}) : null);
       }, function () { if (!done) { done = true; clearTimeout(t); resolve(null); } });
     });
   }
@@ -263,7 +269,8 @@
     var f = [];
     if (ae.precompGroups) f.push('precomp groups');
     if (ae.parametric) f.push('parametric');
-    if (aeUpdate && aeUpdate.status === 'installed') f.unshift('v' + aeUpdate.latest + ' ready — restart AE');
+    if (aeUpdate && aeUpdate.status === 'installed' && aeUpdate.restart) f.unshift('v' + aeUpdate.latest + ' ready — restart AE');
+    else if (aeVersion && newerThan(aeVersion, VERSION)) f.unshift('v' + aeVersion + ' installed — reopen the plugin');
     $('mode').textContent = f.join(' · ');
   }
   var aeWas;

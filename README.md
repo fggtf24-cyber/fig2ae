@@ -40,10 +40,12 @@
 
 - **Скачать:** https://github.com/fggtf24-cyber/fig2ae/raw/main/Fig2AE-Setup.exe (то же на сайте Яйца Клауд) —
   один файл, кнопка «Установить», без прав администратора. Без exe: `Fig2AE.zip` → `Install.cmd`.
-- **Автообновление** (как у VoiceType): Fig2AE в After Effects через 20 секунд после запуска AE и потом каждые
-  6 часов читает `version.txt` из ветки main. Если версия новее — скачивает `Fig2AE.zip` оттуда же и ставит поверх:
-  расширение AE (после перезапуска AE), плагин Figma (со следующего запуска плагина), запасную панель.
-  Выключается галочкой «Update automatically» в панели → System; там же «Check for updates».
+- **Автообновление** (как у VoiceType): Fig2AE в After Effects через 5 секунд после запуска AE и потом каждые
+  6 часов читает `version.txt` из ветки main. Если версия новее — скачивает `Fig2AE.zip` оттуда же, ставит поверх
+  и сразу перезагружает себя (сервер и панель) — **без перезапуска AE и без Setup**. Плагин Figma обновляется
+  на диске и подхватывается при следующем открытии плагина. Перезапуск AE нужен, только если изменился
+  `cep/CSXS/manifest.xml` (новая панель и т.п.) — тогда панель так и пишет. Выключается галочкой
+  «Update automatically» в панели → System; там же «Check for updates».
 - **Выпустить версию:** `node make-release.js bump 0.4.2` → `npm test` → commit (вместе с `Fig2AE-Setup.exe`, `Fig2AE.zip` и `version.txt`) → push в main.
 - Плагин Figma ставится в `%LOCALAPPDATA%\Fig2AE\figma-plugin` — импортировать в Figma оттуда, тогда его обновляет автообновление.
 

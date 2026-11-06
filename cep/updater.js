@@ -136,6 +136,10 @@ function check(current, opts) {
           var b = path.join(tmp, 'backup' + i);
           if (fs.existsSync(t[1])) { copyOver(t[1], b); backups.push([b, t[1]]); }
         });
+        // a changed manifest (new panel, new host versions) only takes effect after After Effects restarts;
+        // anything else is picked up live: the server and the panel reload themselves
+        var strip = function (f) { try { return fs.readFileSync(f, 'utf8').replace(/Version="[\d.]+"/g, ''); } catch (e) { return ''; } };
+        s.restart = strip(path.join(targets[0][1], 'CSXS', 'manifest.xml')) !== strip(path.join(out, 'cep', 'CSXS', 'manifest.xml'));
         targets.forEach(function (t) { copyOver(t[0], t[1]); });
       } catch (e) {
         backups.forEach(function (b) { try { copyOver(b[0], b[1]); } catch (e2) {} });

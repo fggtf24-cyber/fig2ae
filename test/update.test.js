@@ -30,10 +30,16 @@ https.get = function (url, opts, cb) {
 var U = require(path.join(ROOT, 'cep', 'updater.js'));
 U.check('0.0.1', { cepDir: cepDir }).then(function (s) {
   assert.strictEqual(s.status, 'installed', JSON.stringify(s));
+  assert.strictEqual(s.restart, true, 'у старой копии не было manifest.xml — нужен перезапуск AE');
   assert.notStrictEqual(fs.readFileSync(path.join(cepDir, 'server.js'), 'utf8'), 'old', 'расширение обновлено');
   assert.ok(fs.existsSync(path.join(cepDir, 'panel', 'host.jsx')));
   assert.notStrictEqual(fs.readFileSync(path.join(plugin, 'code.js'), 'utf8'), 'old', 'плагин Figma обновлён');
+  // same manifest (only versions differ): applied live, no AE restart
+  served['version.txt'] = '9.9.10';
   return U.check('9.9.9', { cepDir: cepDir });
+}).then(function (s) {
+  assert.strictEqual(s.status, 'installed'); assert.strictEqual(s.restart, false, 'манифест тот же — обновление без перезапуска');
+  return U.check('9.9.10', { cepDir: cepDir });
 }).then(function (s) {
   assert.strictEqual(s.status, 'latest');
   // a broken archive: nothing is touched
@@ -44,7 +50,7 @@ U.check('0.0.1', { cepDir: cepDir }).then(function (s) {
   fs.writeFileSync(path.join(tmp, 'cep', 'CSXS', 'manifest.xml'), 'x');
   cp.execFileSync('zip', ['-qr', path.join(tmp, 'bad.zip'), 'cep'], { cwd: tmp });
   served['Fig2AE.zip'] = fs.readFileSync(path.join(tmp, 'bad.zip'));
-  return U.check('9.9.9', { cepDir: cepDir });
+  return U.check('9.9.10', { cepDir: cepDir });
 }).then(function (s) {
   assert.strictEqual(s.status, 'error');
   assert.ok(/incomplete/.test(s.error), s.error);

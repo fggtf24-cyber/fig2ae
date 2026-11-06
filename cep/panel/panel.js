@@ -144,7 +144,8 @@
   function showUpdate(u) {
     u = u || {};
     var t = 'v' + S.VERSION, b = 'Check for updates';
-    if (u.status === 'installed') { t += ' → v' + u.latest + ' installed'; b = 'Restart After Effects to finish'; }
+    if (u.status === 'installed' && u.restart) { t += ' → v' + u.latest + ' installed'; b = 'Restart After Effects to finish'; }
+    else if (u.status === 'installed') { t += ' → v' + u.latest; b = 'Updating…'; }
     else if (u.status === 'available') { t += ' · v' + u.latest + ' available'; b = 'Install v' + u.latest; }
     else if (u.status === 'latest') t += ' · up to date';
     else if (u.status === 'error') t += ' · update check failed';
@@ -157,12 +158,27 @@
     $('updBtnText').textContent = 'Checking…';
     U.check(S.VERSION).then(function (u) {
       showUpdate(u);
-      toast(u.status === 'installed' ? 'v' + u.latest + ' installed — restart After Effects' :
+      toast(u.status === 'installed' ? (u.restart ? 'v' + u.latest + ' installed — restart After Effects' : 'v' + u.latest + ' installed') :
             u.status === 'latest' ? 'Fig2AE is up to date' : u.status === 'error' ? 'Update failed: ' + u.error : '',
             u.status === 'error' ? 'err' : 'ok');
     });
   };
-  setInterval(function () { showUpdate(U.state()); }, 10000);
+  // new files on disk and no AE restart needed: the panel reloads into the new version by itself
+  function liveUpdate() {
+    var u = U.state();
+    showUpdate(u);
+    if (u.status !== 'installed' || u.restart || !U.newer || !U.newer(u.latest, S.VERSION)) return;
+    var key = 'fig2ae.reloadedFor';
+    try { if (sessionStorage.getItem(key) === u.latest) return; sessionStorage.setItem(key, u.latest); } catch (e) {}
+    try { sessionStorage.setItem('fig2ae.updatedTo', u.latest); } catch (e) {}
+    Object.keys(require.cache).forEach(function (k) { if (k.indexOf('fig2ae') >= 0) delete require.cache[k]; });
+    location.reload();
+  }
+  setInterval(liveUpdate, 4000);
+  try {
+    var upd = sessionStorage.getItem('fig2ae.updatedTo');
+    if (upd) { sessionStorage.removeItem('fig2ae.updatedTo'); setTimeout(function () { toast('Fig2AE updated to v' + upd, 'ok'); }, 300); }
+  } catch (e) {}
   function showWarnings(list) {
     var w = $('warns');
     w.innerHTML = '';

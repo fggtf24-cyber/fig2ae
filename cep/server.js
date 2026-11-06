@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.5';
+var VERSION = '0.4.6';
 var updater = require(path.join(__dirname, 'updater.js'));
 
 var PORT = 7251;
@@ -102,7 +102,7 @@ function start(evalHost, opts) {
     return path.join(os.homedir(), 'Documents', 'Fig2AE');
   }
   var retryMs = opts.retryMs || 1000, waitMs = opts.waitMs || 30 * 60 * 1000;
-  var queue = Promise.resolve(), seq = 0;
+  var queue = Promise.resolve(), seq = 0, busy = 0, timers = [], servers = [];
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
@@ -178,15 +178,25 @@ function start(evalHost, opts) {
       var name = (q ? decodeURIComponent(q[1]) : '').replace(/[\\\/:*?"<>|]+/g, '_');
       if (!/^fig2ae_.*\.jsx$/.test(name)) name = 'fig2ae_comp.jsx';
       var body = Buffer.concat(chunks).toString('utf8');
+      busy++;
       queue = queue.then(function () { return run(name, body); })
-        .then(function (r) { send(res, 200, r); }, function (e) { logEvent('error', 'request failed', errInfo(e)); send(res, 400, { ok: false, error: String(e && e.message || e) }); });
+        .then(function (r) { send(res, 200, r); }, function (e) { logEvent('error', 'request failed', errInfo(e)); send(res, 400, { ok: false, error: String(e && e.message || e) }); })
+        .then(function () { busy--; });
     });
   }
   // loopback only; "localhost" may resolve to either address family
   var server = http.createServer(handle);
   server.listen(opts.port === undefined ? PORT : opts.port, '127.0.0.1');
+  servers.push(server);
+  /** stops listening and every timer: the page reloads itself after an update (index.html) */
+  server.fig2aeStop = function (done) {
+    timers.forEach(function (t) { clearTimeout(t); clearInterval(t); });
+    var n = servers.length;
+    servers.forEach(function (sv) { try { sv.close(function () { if (--n === 0) done(); }); } catch (e) { if (--n === 0) done(); } });
+    setTimeout(done, 3000);           // close waits for open connections (keep-alive): don't wait forever
+  };
   if (opts.port === undefined) {
-    http.createServer(handle).on('error', function () {}).listen(PORT, '::1');
+    servers.push(http.createServer(handle).on('error', function () {}).listen(PORT, '::1'));
     // auto-update: shortly after AE starts, then every 6 hours
     var auto = function () {
       if (readSettings(settingsFile).autoUpdate) updater.check(VERSION).then(function (u) {
@@ -206,8 +216,18 @@ function start(evalHost, opts) {
     } catch (e) {}
     process.on('uncaughtException', function (e) { logEvent('error', 'uncaught exception', errInfo(e)); });
     process.on('unhandledRejection', function (e) { logEvent('error', 'unhandled rejection', errInfo(e)); });
-    setTimeout(auto, 20 * 1000);
-    setInterval(auto, 6 * 3600 * 1000);
+    timers.push(setTimeout(auto, 5 * 1000));
+    timers.push(setInterval(auto, 6 * 3600 * 1000));
+    // a new version on disk (auto-update or the panel's "Check for updates"): reload into it, no AE restart,
+    // unless the extension manifest changed or an import is running
+    var applying = false;
+    timers.push(setInterval(function () {
+      var u = updater.state();
+      if (applying || busy || !opts.onUpdate || u.status !== 'installed' || u.restart || !updater.newer(u.latest, VERSION)) return;
+      applying = true;
+      logEvent('update', 'applying ' + u.latest + ' without restarting After Effects');
+      opts.onUpdate(server.fig2aeStop);
+    }, 3000));
   }
   return server;
 }

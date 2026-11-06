@@ -7,5 +7,13 @@
   var server = require(here.slice(0, here.lastIndexOf('/')) + '/server.js');
   server.start(function (code) {
     return new Promise(function (resolve) { window.__adobe_cep__.evalScript(code, resolve); });
+  }, {
+    // auto-update put new files on disk: stop, forget the old modules, load the new ones
+    onUpdate: function (stop) {
+      stop(function () {
+        Object.keys(require.cache).forEach(function (k) { if (k.indexOf('fig2ae') >= 0) delete require.cache[k]; });
+        location.reload();
+      });
+    }
   }).on('error', function (e) { console.error('Fig2AE server: ' + e.message); server.logEvent('error', 'server could not start: ' + e.message); });
 </script>
