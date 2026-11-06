@@ -12,7 +12,7 @@
  */
 var https = require('https'), fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');
 
-var REPO = 'brlk33/fig2ae';
+var REPO = 'fggtf24-cyber/fig2ae';
 var BRANCH = 'main';
 var RAW = 'https://raw.githubusercontent.com/' + REPO + '/' + BRANCH + '/';
 var ASSET = 'Fig2AE.zip';

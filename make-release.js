@@ -3,7 +3,7 @@
  * node make-release.js bump 0.4.1 -> writes the version everywhere it lives, then builds
  *
  * Publishing (same scheme as VoiceType): commit Fig2AE.zip + version.txt and push to main.
- * The site links to github.com/brlk33/fig2ae/raw/main/Fig2AE.zip; every installed Fig2AE
+ * The site links to github.com/fggtf24-cyber/fig2ae/raw/main/Fig2AE.zip; every installed Fig2AE
  * sees the new version.txt and updates itself (cep/updater.js).
  */
 var fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');

@@ -36,7 +36,7 @@
 
 ## Скачать, обновления, выпуск версии
 
-- **Скачать:** https://github.com/brlk33/fig2ae/raw/main/Fig2AE.zip (то же на сайте Яйца Клауд).
+- **Скачать:** https://github.com/fggtf24-cyber/fig2ae/raw/main/Fig2AE.zip (то же на сайте Яйца Клауд).
   Распаковать → закрыть After Effects → `Install.cmd`.
 - **Автообновление** (как у VoiceType): Fig2AE в After Effects через 20 секунд после запуска AE и потом каждые
   6 часов читает `version.txt` из ветки main. Если версия новее — скачивает `Fig2AE.zip` оттуда же и ставит поверх:
