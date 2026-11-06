@@ -34,6 +34,7 @@ function makeJsx(json, rt) {
   (function walk(ls) {
     for (var i = 0; i < ls.length; i++) {
       var l = ls[i];
+      if (!l) continue;
       if (l.png) l.png.ext = l.png.ext === 'jpg' ? 'jpg' : 'png';           // goes into a file name
       if (l.png && l.png.b64) {
         if (!/^[A-Za-z0-9+/=]*$/.test(l.png.b64)) throw new Error('картинка не base64');   // would end the comment
@@ -41,7 +42,7 @@ function makeJsx(json, rt) {
         l.png.ref = at >= 0 ? at : blobs.push(l.png.b64) - 1;
         delete l.png.b64;
       }
-      if (l.matte) walk([l.matte.layer]);
+      if (l.matte) walk([l.type === 'bgblur' ? l.matte : l.matte.layer]);   // a background blur keeps its mask layer in .matte itself
       if (l.comp) walk(l.comp.layers);
     }
   })(doc.comp.layers);

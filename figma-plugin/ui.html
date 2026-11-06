@@ -143,8 +143,8 @@
 
 <div id="log"></div>
 <div class="foot">
-  <span class="foot-l"><span>v0.4.2</span>
-    <button class="logbtn" id="logBtn" title="Copy the diagnostic log — paste it into the chat with Claude">
+  <span class="foot-l"><span>v0.4.3</span>
+    <button class="logbtn" id="logBtn" title="Copy the diagnostic log">
       <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg><span id="logBtnText">Log</span>
     </button></span>
   <span id="mode"></span>
@@ -280,7 +280,7 @@
       var copied = copyText(text);
       if (!copied) saveText(text, 'fig2ae-log-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.txt');
       b.classList.remove('err'); b.classList.add('done');
-      $('logBtnText').textContent = copied ? 'Copied — paste it in the chat' : 'Saved to Downloads';
+      $('logBtnText').textContent = copied ? 'Log copied' : 'Log saved to Downloads';
       setTimeout(function () { b.classList.remove('done'); $('logBtnText').textContent = 'Log'; }, 3500);
     });
   };
@@ -345,7 +345,7 @@
     busy(false);
     if (m.type === 'error') {
       addLog('error', 'Figma export failed: ' + m.message, { stack: m.diag && m.diag.stack, diag: m.diag, warnings: m.warnings });
-      log.innerHTML = call('e', esc(m.message) + '<br><span style="opacity:.75">Press <b>Log</b> below and send it to Claude.</span>');
+      log.innerHTML = call('e', esc(m.message) + '<br><span style="opacity:.75">Details: <b>Log</b> button below copies them.</span>');
       return;
     }
     if (m.type !== 'file') return;
@@ -360,7 +360,7 @@
         busy(false);
         if (!r.ok) {
           addLog('error', 'After Effects import failed: ' + (r.error || 'not finished'), r);
-          log.innerHTML = call('e', 'After Effects: ' + esc(r.error || 'import not finished') + '<br><span style="opacity:.75">Press <b>Log</b> below and send it to Claude.</span>') + warningsHtml('In AE', r.log);
+          log.innerHTML = call('e', 'After Effects: ' + esc(r.error || 'import not finished') + '<br><span style="opacity:.75">Details: <b>Log</b> button below copies them.</span>') + warningsHtml('In AE', r.log);
           return;
         }
         addLog('import', 'imported "' + r.comp + '" (' + r.mode + ', ' + r.secs.toFixed(1) + ' s)', r.log && r.log.length ? r.log : undefined);
@@ -384,6 +384,7 @@ function makeJsx(json, rt) {
   (function walk(ls) {
     for (var i = 0; i < ls.length; i++) {
       var l = ls[i];
+      if (!l) continue;
       if (l.png) l.png.ext = l.png.ext === 'jpg' ? 'jpg' : 'png';           // goes into a file name
       if (l.png && l.png.b64) {
         if (!/^[A-Za-z0-9+/=]*$/.test(l.png.b64)) throw new Error('картинка не base64');   // would end the comment
@@ -391,7 +392,7 @@ function makeJsx(json, rt) {
         l.png.ref = at >= 0 ? at : blobs.push(l.png.b64) - 1;
         delete l.png.b64;
       }
-      if (l.matte) walk([l.matte.layer]);
+      if (l.matte) walk([l.type === 'bgblur' ? l.matte : l.matte.layer]);   // a background blur keeps its mask layer in .matte itself
       if (l.comp) walk(l.comp.layers);
     }
   })(doc.comp.layers);

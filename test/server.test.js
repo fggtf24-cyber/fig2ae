@@ -10,6 +10,18 @@ var path = require('path');
 var http = require('http');
 var srv = require('../cep/server.js');
 
+// an export with a Figma background blur: its mask layer sits in .matte itself, not in .matte.layer
+(function () {
+  var rt = require('../cep/runtime.js');
+  var shape = { type: 'shape', name: 'Header · blur mask', groups: [] };
+  var pic = { type: 'image', name: 'pic', png: { b64: 'AAAA', ext: 'png' } };
+  var doc = { app: 'fig2ae', v: 3, comp: { name: 'c', w: 10, h: 10, layers: [
+    { type: 'bgblur', name: 'Header · background blur', sigma: 4, matte: shape }, pic,
+    { type: 'precomp', name: 'p', comp: { name: 'p', w: 5, h: 5, layers: [{ type: 'bgblur', name: 'b', sigma: 1, matte: shape }] } }] }, warnings: [] };
+  var jsx = rt.makeJsx(JSON.stringify(doc), rt.runtime);
+  assert.ok(jsx.indexOf('F2A-PAYLOAD-END') > 0 && jsx.indexOf('"ref":0') > 0, 'экспорт с background blur собирается');
+})();
+
 var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fig2ae-srv-'));
 var calls = [];
 var server = srv.start(function (code) {

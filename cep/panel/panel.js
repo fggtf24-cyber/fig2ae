@@ -119,7 +119,7 @@
     },
     openFolder: function () { host('openFolder', set.imagePath || defaultPath()); },
     reload: function () { location.reload(); },
-    // the server's events (imports, errors, updates) as text for Claude
+    // the server's events (imports, errors, updates) as text
     copyLog: function () {
       fetch('http://127.0.0.1:7251/log').then(function (r) { return r.json(); }).then(function (L) {
         var t = ['=== Fig2AE diagnostic log (After Effects panel) ===', 'created: ' + new Date().toString(),
@@ -130,7 +130,7 @@
         ta.value = t.join('\n'); document.body.appendChild(ta); ta.select();
         var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
         ta.remove();
-        toast(ok ? 'Log copied — paste it in the chat with Claude' : 'Could not copy the log', ok ? 'ok' : 'err');
+        toast(ok ? 'Log copied' : 'Could not copy the log', ok ? 'ok' : 'err');
       }, function () { toast('Fig2AE server is not running — restart After Effects', 'err'); });
     }
   };
