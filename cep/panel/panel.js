@@ -118,7 +118,21 @@
       });
     },
     openFolder: function () { host('openFolder', set.imagePath || defaultPath()); },
-    reload: function () { location.reload(); }
+    reload: function () { location.reload(); },
+    // the server's events (imports, errors, updates) as text for Claude
+    copyLog: function () {
+      fetch('http://127.0.0.1:7251/log').then(function (r) { return r.json(); }).then(function (L) {
+        var t = ['=== Fig2AE diagnostic log (After Effects panel) ===', 'created: ' + new Date().toString(),
+                 'v' + L.version + ' | ' + L.platform + ' | node ' + L.node, 'panel settings: ' + JSON.stringify(L.settings),
+                 'update: ' + JSON.stringify(L.update), '', '--- server events (oldest first) ---'];
+        L.events.forEach(function (e) { t.push('[' + e.t + '] ' + e.kind.toUpperCase() + ' ' + e.msg + (e.data ? '\n    ' + JSON.stringify(e.data) : '')); });
+        var ta = document.createElement('textarea');
+        ta.value = t.join('\n'); document.body.appendChild(ta); ta.select();
+        var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+        ta.remove();
+        toast(ok ? 'Log copied — paste it in the chat with Claude' : 'Could not copy the log', ok ? 'ok' : 'err');
+      }, function () { toast('Fig2AE server is not running — restart After Effects', 'err'); });
+    }
   };
   Array.prototype.forEach.call(document.querySelectorAll('[data-cmd]'), function (b) {
     b.onclick = function () { $('menu').classList.remove('open'); CMD[b.getAttribute('data-cmd')](); };

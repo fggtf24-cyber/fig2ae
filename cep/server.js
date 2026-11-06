@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.1';
+var VERSION = '0.4.2';
 var updater = require(path.join(__dirname, 'updater.js'));
 
 var PORT = 7251;
@@ -49,6 +49,25 @@ function writeSettings(obj, file) {
   return cur;
 }
 
+/**
+ * Diagnostic log (GET /log, the "copy log" buttons in Figma and in the AE panel):
+ * the last 300 server events, newest last, also kept in <settings dir>/server.log.
+ */
+var LOG = [], LOG_TO_FILE = true;
+function logEvent(kind, msg, data) {
+  var e = { t: new Date().toISOString(), kind: kind, msg: String(msg) };
+  if (data !== undefined) e.data = data;
+  LOG.push(e);
+  if (LOG.length > 300) LOG.splice(0, LOG.length - 300);
+  if (LOG_TO_FILE) try {
+    fs.mkdirSync(settingsDir(), { recursive: true });
+    var f = path.join(settingsDir(), 'server.log');
+    try { if (fs.statSync(f).size > 1024 * 1024) fs.renameSync(f, f + '.old'); } catch (e2) {}
+    fs.appendFileSync(f, JSON.stringify(e) + '\n');
+  } catch (e3) {}
+}
+function errInfo(e) { return { message: String(e && e.message || e), stack: e && e.stack ? String(e.stack).split('\n').slice(0, 8).join('\n') : '' }; }
+
 /** ExtendScript that runs one export quietly and returns "OK\t<comp>\t<secs>\t<log joined by \u0001>" */
 function importCode(file, opts) {
   return '(function(){var g=$.global,err="";g.F2A_QUIET=true;g.F2A_LAST=null;' +
@@ -75,6 +94,7 @@ function stamp() {
  */
 function start(evalHost, opts) {
   opts = opts || {};
+  if (opts.dir) LOG_TO_FILE = false;                     // tests
   var settingsFile = opts.settingsFile;                  // tests; normally settingsDir()/settings.json
   function exportsDir(set) {
     if (opts.dir) return opts.dir;
@@ -87,6 +107,7 @@ function start(evalHost, opts) {
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
   async function run(name, body) {
+    logEvent('import', 'received ' + name + ' (' + Math.round(body.length / 1024) + ' KB)');
     var doc = JSON.parse(body);                                  // data only, or it throws
     if (!doc || doc.app !== 'fig2ae' || !doc.comp) throw new Error('not a Fig2AE export');
     var jsx = importer.makeJsx(body, importer.runtime);
@@ -97,8 +118,14 @@ function start(evalHost, opts) {
     fs.writeFileSync(file, jsx, 'utf8');
     for (var waited = 0; ; waited += retryMs) {
       var out = await evalHost(importCode(file, { target: set.target, parametric: set.parametric, precompGroups: set.precompGroups }));
-      if (out !== BUSY) { var r = parseResult(out); r.file = file; lastResult(r, doc); return r; }
-      if (waited >= waitMs) return { ok: false, error: 'After Effects is busy (a dialog is open?) — import not done', file: file };
+      if (out !== BUSY) {
+        var r = parseResult(out); r.file = file; lastResult(r, doc);
+        logEvent(r.ok ? 'import' : 'error', r.ok ? 'imported "' + r.comp + '" (' + r.mode + ', ' + r.secs.toFixed(1) + ' s)' : 'import failed: ' + r.error,
+                 { settings: set, aeLog: r.log, figmaWarnings: doc.warnings || [], file: file, raw: r.ok ? undefined : String(out).slice(0, 2000) });
+        return r;
+      }
+      if (waited === 0) logEvent('import', 'After Effects is busy (dialog open?) — waiting');
+      if (waited >= waitMs) { logEvent('error', 'gave up waiting for After Effects'); return { ok: false, error: 'After Effects is busy (a dialog is open?) — import not done', file: file }; }
       await sleep(retryMs);
     }
   }
@@ -127,6 +154,11 @@ function start(evalHost, opts) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    if (req.method === 'GET' && /^\/log\b/.test(req.url)) {
+      send(res, 200, { ok: true, app: 'fig2ae', version: VERSION, platform: process.platform + ' ' + os.release(), node: process.version,
+                       settings: readSettings(settingsFile), update: updater.state(), events: LOG });
+      return;
+    }
     if (req.method === 'GET') {
       // the Figma plugin asks for the panel settings before it exports (precomp groups, parametric shapes)
       send(res, 200, { ok: true, app: 'fig2ae', version: VERSION, settings: readSettings(settingsFile), update: updater.state() });
@@ -141,7 +173,7 @@ function start(evalHost, opts) {
       if (!/^fig2ae_.*\.jsx$/.test(name)) name = 'fig2ae_comp.jsx';
       var body = Buffer.concat(chunks).toString('utf8');
       queue = queue.then(function () { return run(name, body); })
-        .then(function (r) { send(res, 200, r); }, function (e) { send(res, 400, { ok: false, error: String(e && e.message || e) }); });
+        .then(function (r) { send(res, 200, r); }, function (e) { logEvent('error', 'request failed', errInfo(e)); send(res, 400, { ok: false, error: String(e && e.message || e) }); });
     });
   }
   // loopback only; "localhost" may resolve to either address family
@@ -150,12 +182,19 @@ function start(evalHost, opts) {
   if (opts.port === undefined) {
     http.createServer(handle).on('error', function () {}).listen(PORT, '::1');
     // auto-update: shortly after AE starts, then every 6 hours
-    var auto = function () { if (readSettings(settingsFile).autoUpdate) updater.check(VERSION); };
+    var auto = function () {
+      if (readSettings(settingsFile).autoUpdate) updater.check(VERSION).then(function (u) {
+        if (u.status !== 'latest') logEvent(u.status === 'error' ? 'error' : 'update', 'update ' + u.status + (u.latest ? ' ' + u.latest : '') + (u.error ? ': ' + u.error : ''));
+      });
+    };
+    logEvent('start', 'Fig2AE ' + VERSION + ' server started');
+    process.on('uncaughtException', function (e) { logEvent('error', 'uncaught exception', errInfo(e)); });
+    process.on('unhandledRejection', function (e) { logEvent('error', 'unhandled rejection', errInfo(e)); });
     setTimeout(auto, 20 * 1000);
     setInterval(auto, 6 * 3600 * 1000);
   }
   return server;
 }
 
-module.exports = { start: start, importCode: importCode, parseResult: parseResult, readSettings: readSettings, writeSettings: writeSettings,
+module.exports = { start: start, logEvent: logEvent, importCode: importCode, parseResult: parseResult, readSettings: readSettings, writeSettings: writeSettings,
                    settingsDir: settingsDir, DEFAULTS: DEFAULTS, PORT: PORT, BUSY: BUSY, VERSION: VERSION };

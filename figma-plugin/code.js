@@ -49,8 +49,10 @@ figma.on('selectionchange', postSelection);
 
 (async function () {
   var opts = null;
+  var log = null;
   try { opts = await figma.clientStorage.getAsync('opts'); } catch (e) {}
-  figma.ui.postMessage({ type: 'init', opts: opts || null });
+  try { log = await figma.clientStorage.getAsync('log'); } catch (e) {}
+  figma.ui.postMessage({ type: 'init', opts: opts || null, log: log || [] });
   postSelection();
 })();
 
@@ -58,6 +60,7 @@ figma.ui.onmessage = async function (msg) {
   if (msg.type === 'close') { figma.closePlugin(); return; }
   if (msg.type === 'resize') { try { figma.ui.resize(300, Math.max(200, Math.min(640, Math.round(msg.h) || 420))); } catch (e) {} return; }
   if (msg.type === 'saveOpts') { try { await figma.clientStorage.setAsync('opts', msg.opts); } catch (e) {} return; }
+  if (msg.type === 'saveLog') { try { await figma.clientStorage.setAsync('log', msg.log); } catch (e) {} return; }
   if (msg.type === 'toggleRaster') {
     var sel = figma.currentPage.selection, on = false;
     for (var i = 0; i < sel.length; i++) if (!rasterMarked(sel[i])) on = true;   // any unmarked -> mark all
@@ -68,14 +71,36 @@ figma.ui.onmessage = async function (msg) {
   }
   if (msg.type !== 'export') return;
   W = [];
+  var diag = diagnostics(), t0 = Date.now();
   try {
     var doc = await buildDoc(msg.opts);
     var json = JSON.stringify(doc);
-    figma.ui.postMessage({ type: 'file', name: 'fig2ae_' + safeName(doc.comp.name) + '.jsx', json: json, warnings: W, bytes: json.length });
+    diag.secs = (Date.now() - t0) / 1000; diag.layers = countLayers(doc.comp.layers);
+    figma.ui.postMessage({ type: 'file', name: 'fig2ae_' + safeName(doc.comp.name) + '.jsx', json: json, warnings: W, bytes: json.length, diag: diag });
   } catch (e) {
-    figma.ui.postMessage({ type: 'error', message: (e && e.message) ? e.message : String(e) });
+    diag.secs = (Date.now() - t0) / 1000; diag.stack = e && e.stack ? String(e.stack).split('\n').slice(0, 10).join('\n') : '';
+    figma.ui.postMessage({ type: 'error', message: (e && e.message) ? e.message : String(e), warnings: W, diag: diag });
   }
 };
+
+/** what the "copy log" button needs to know about the file and the selection (names only, no content) */
+function diagnostics() {
+  var d = { editor: figma.editorType, api: figma.apiVersion, file: '', page: '', selection: [] };
+  try { d.file = figma.root.name; d.page = figma.currentPage.name; } catch (e) {}
+  try {
+    var sel = figma.currentPage.selection;
+    for (var i = 0; i < sel.length && i < 10; i++) {
+      var n = sel[i];
+      d.selection.push(n.type + ' "' + n.name + '" ' + Math.round(n.width || 0) + '×' + Math.round(n.height || 0) +
+                       ('children' in n ? ', ' + countNodes(n) + ' nodes' : ''));
+    }
+    if (sel.length > 10) d.selection.push('… ' + (sel.length - 10) + ' more');
+  } catch (e) {}
+  try { d.p3 = figma.root.documentColorProfile; } catch (e) {}
+  return d;
+}
+function countNodes(n) { var c = 1; if ('children' in n) for (var i = 0; i < n.children.length; i++) c += countNodes(n.children[i]); return c; }
+function countLayers(ls) { var c = 0; for (var i = 0; i < ls.length; i++) { c++; if (ls[i].matte) c++; if (ls[i].comp) c += countLayers(ls[i].comp.layers); } return c; }
 
 function safeName(s) { return String(s).replace(/[^\w\dА-Яа-яЁё\-_ ]+/g, '').replace(/\s+/g, '_').substring(0, 40) || 'comp'; }
 

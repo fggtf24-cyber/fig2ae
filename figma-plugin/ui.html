@@ -87,7 +87,14 @@
   .wt { font-size: 11.5px; color: var(--muted); margin: 10px 0 4px; }
   .w { font-size: 11.5px; color: #d7b47c; background: var(--yellow-bg); border-radius: 4px; padding: 4px 8px; margin-bottom: 3px; line-height: 1.4; }
 
-  .foot { display: flex; justify-content: space-between; padding: 8px 14px 4px; font-size: 11px; color: var(--faint); }
+  .foot { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px 2px 14px; font-size: 11px; color: var(--faint); }
+  .foot-l { display: flex; align-items: center; gap: 6px; }
+  .logbtn { position: relative; display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 6px; border: 0; border-radius: 4px;
+    background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
+  .logbtn:hover { background: var(--hover); color: var(--text); }
+  .logbtn svg { width: 13px; height: 13px; }
+  .logbtn.err::after { content: ''; position: absolute; top: 3px; left: 15px; width: 6px; height: 6px; border-radius: 50%; background: var(--red); }
+  .logbtn.done { color: var(--green); }
 </style>
 
 <div class="sec">
@@ -135,10 +142,74 @@
 </div>
 
 <div id="log"></div>
-<div class="foot"><span>v0.4.1</span><span id="mode"></span></div>
+<div class="foot">
+  <span class="foot-l"><span>v0.4.2</span>
+    <button class="logbtn" id="logBtn" title="Copy the diagnostic log — paste it into the chat with Claude">
+      <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg><span id="logBtnText">Log</span>
+    </button></span>
+  <span id="mode"></span>
+</div>
 
 <script>
   var AE_URL = 'http://localhost:7251';
+  var VERSION = document.querySelector('.foot-l span').textContent.replace(/^v/, '');   // make-release.js bumps the footer
+
+  /* ---------- diagnostic log: kept between runs (clientStorage), copied by the Log button */
+  var LOGBUF = [];
+  function cut(v, n) { v = typeof v === 'string' ? v : JSON.stringify(v); return v && v.length > n ? v.slice(0, n) + '…' : v; }
+  function addLog(kind, msg, data) {
+    var e = { t: new Date().toISOString(), kind: kind, msg: String(msg) };
+    if (data !== undefined) e.data = cut(data, 6000);
+    LOGBUF.push(e);
+    if (LOGBUF.length > 120) LOGBUF.splice(0, LOGBUF.length - 120);
+    if (kind === 'error') $('logBtn').classList.add('err');
+    parent.postMessage({ pluginMessage: { type: 'saveLog', log: LOGBUF } }, '*');
+  }
+  window.addEventListener('error', function (ev) { addLog('error', 'UI error: ' + ev.message, (ev.error && ev.error.stack) || (ev.filename + ':' + ev.lineno)); });
+  window.addEventListener('unhandledrejection', function (ev) { addLog('error', 'UI promise: ' + (ev.reason && ev.reason.message || ev.reason), ev.reason && ev.reason.stack); });
+
+  function aeLog() {
+    return Promise.race([
+      fetch(AE_URL + '/log').then(function (r) { return r.json(); }),
+      new Promise(function (r) { setTimeout(function () { r(null); }, 1500); })
+    ]).catch(function () { return null; });
+  }
+  function logText(server) {
+    var L = [];
+    L.push('=== Fig2AE diagnostic log ===');
+    L.push('created: ' + new Date().toString());
+    L.push('figma plugin: v' + VERSION + ' | ' + navigator.userAgent);
+    if (server) {
+      L.push('after effects side: v' + server.version + ' | ' + server.platform + ' | node ' + server.node);
+      L.push('panel settings: ' + JSON.stringify(server.settings));
+      L.push('update: ' + JSON.stringify(server.update));
+    } else L.push('after effects side: NOT REACHABLE (AE closed, or Fig2AE not installed in AE)');
+    L.push('');
+    L.push('--- Figma plugin events (oldest first) ---');
+    LOGBUF.forEach(function (e) { L.push('[' + e.t + '] ' + e.kind.toUpperCase() + ' ' + e.msg + (e.data ? '\n    ' + String(e.data).replace(/\n/g, '\n    ') : '')); });
+    if (server && server.events) {
+      L.push('');
+      L.push('--- After Effects server events (oldest first) ---');
+      server.events.forEach(function (e) { L.push('[' + e.t + '] ' + e.kind.toUpperCase() + ' ' + e.msg + (e.data ? '\n    ' + JSON.stringify(e.data).replace(/\n/g, '\n    ') : '')); });
+    }
+    return L.join('\n');
+  }
+  function copyText(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    ta.remove();
+    return ok;
+  }
+  function saveText(text, name) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 10000);
+  }
   var $ = function (id) { return document.getElementById(id); };
   var log = $('log'), go = $('go'), raster = $('raster');
   var st = { ref: false, hidden: false };
@@ -195,7 +266,24 @@
     if (aeUpdate && aeUpdate.status === 'installed') f.unshift('v' + aeUpdate.latest + ' ready — restart AE');
     $('mode').textContent = f.join(' · ');
   }
-  function refreshAE() { return getAE().then(function (s) { ae = s; showAE(); }); }
+  var aeWas;
+  function refreshAE() {
+    return getAE().then(function (s) {
+      ae = s; showAE();
+      if (!!s !== aeWas) { addLog('ae', s ? 'After Effects connected' : 'After Effects not reachable', s || undefined); aeWas = !!s; }
+    });
+  }
+  $('logBtn').onclick = function () {
+    $('logBtnText').textContent = '…';
+    aeLog().then(function (server) {
+      var text = logText(server), b = $('logBtn');
+      var copied = copyText(text);
+      if (!copied) saveText(text, 'fig2ae-log-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.txt');
+      b.classList.remove('err'); b.classList.add('done');
+      $('logBtnText').textContent = copied ? 'Copied — paste it in the chat' : 'Saved to Downloads';
+      setTimeout(function () { b.classList.remove('done'); $('logBtnText').textContent = 'Log'; }, 3500);
+    });
+  };
   refreshAE(); setInterval(refreshAE, 4000);
 
   /* ---------- export */
@@ -205,6 +293,7 @@
   }
   go.onclick = function () {
     busy(true, 'Reading Figma…'); log.innerHTML = '';
+    addLog('export', 'export started', opts());
     refreshAE().then(function () { parent.postMessage({ pluginMessage: { type: 'export', opts: opts() } }, '*'); });
   };
 
@@ -227,6 +316,7 @@
     a.download = m.name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 10000);
+    addLog('export', 'AE did not answer — saved ' + m.name + ' to Downloads');
     log.innerHTML = call('info', 'After Effects did not answer — <b>' + esc(m.name) + '</b> saved to Downloads. In AE: File → Scripts → Run Script File, or the Fig2AE panel menu → Import export file.') +
                     warningsHtml('Warnings', m.warnings);
   }
@@ -238,6 +328,7 @@
       var o = m.opts || {};
       ['fps', 'dur', 'scale'].forEach(function (id) { if (id in o) $(id).value = o[id]; });
       st.ref = !!o.ref; st.hidden = !!o.hidden;
+      LOGBUF = (m.log || []).concat(LOGBUF).slice(-120);   // stored log first, events of this run after
       setRow('refRow', st.ref); setRow('hiddenRow', st.hidden);
       fit();
       return;
@@ -252,19 +343,31 @@
       return;
     }
     busy(false);
-    if (m.type === 'error') { log.innerHTML = call('e', esc(m.message)); return; }
+    if (m.type === 'error') {
+      addLog('error', 'Figma export failed: ' + m.message, { stack: m.diag && m.diag.stack, diag: m.diag, warnings: m.warnings });
+      log.innerHTML = call('e', esc(m.message) + '<br><span style="opacity:.75">Press <b>Log</b> below and send it to Claude.</span>');
+      return;
+    }
     if (m.type !== 'file') return;
 
+    addLog('export', 'Figma export done: ' + m.name + ', ' + (m.bytes / 1048576).toFixed(2) + ' MB, ' + (m.warnings || []).length + ' warning(s)',
+           { diag: m.diag, warnings: m.warnings });
     busy(true, 'Building in After Effects…');
     log.innerHTML = call('info', 'Sent to AE (' + (m.bytes / 1048576).toFixed(1) + ' MB). If a dialog is open in AE, close it — the import goes on.');
     fetch(AE_URL + '/import?name=' + encodeURIComponent(m.name), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: m.json })
       .then(function (r) { return r.json(); })
       .then(function (r) {
         busy(false);
-        if (!r.ok) { log.innerHTML = call('e', 'After Effects: ' + esc(r.error || 'import not finished')) + warningsHtml('In AE', r.log); return; }
+        if (!r.ok) {
+          addLog('error', 'After Effects import failed: ' + (r.error || 'not finished'), r);
+          log.innerHTML = call('e', 'After Effects: ' + esc(r.error || 'import not finished') + '<br><span style="opacity:.75">Press <b>Log</b> below and send it to Claude.</span>') + warningsHtml('In AE', r.log);
+          return;
+        }
+        addLog('import', 'imported "' + r.comp + '" (' + r.mode + ', ' + r.secs.toFixed(1) + ' s)', r.log && r.log.length ? r.log : undefined);
+        if ((r.log || []).some(function (l) { return /^ERROR/.test(l); })) $('logBtn').classList.add('err');
         log.innerHTML = call('ok', '<b>' + esc(r.comp) + '</b> ' + (r.mode === 'current' ? 'updated — layers added to the current comp' : 'created in After Effects') +
                         ' · ' + r.secs.toFixed(1) + ' s') + warningsHtml('Not transferred 1:1', (r.log || []).concat(m.warnings));
-      }, function () { busy(false); download(m); });
+      }, function (e) { busy(false); addLog('ae', 'POST to After Effects failed: ' + (e && e.message || e)); download(m); });
   };
 
   function esc(s) { return String(s).replace(/[<>&]/g, function (c) { return { '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]; }); }
