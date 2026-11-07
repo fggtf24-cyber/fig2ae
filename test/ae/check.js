@@ -250,6 +250,18 @@ var refL = res.layers.filter(function (l) { return /^Figma reference/.test(l.nam
 n++; var rok = refL && refL.guide === true && refL.enabled === false && refL.i === 1; if (!rok) fails++;
 console.log((rok ? '  ok  ' : '  FAIL') + ' reference: top, guide, hidden ' + JSON.stringify(refL));
 
+console.log('"Current": frame centred in a comp 100 x 60 bigger, text moves with the shapes');
+(function () {
+  var cur = res.current || {}, first = {};
+  res.layers.forEach(function (l) { first[l.name] = l.pos; });
+  ['linH', 'text'].forEach(function (name) {
+    var p = cur[name], q = first[name];
+    var ok = cur.mode === 'current' && p && q && Math.abs(p[0] - q[0] - 50) < 0.01 && Math.abs(p[1] - q[1] - 30) < 0.01;
+    n++; if (!ok) fails++;
+    console.log((ok ? '  ok  ' : '  FAIL') + ' ' + name + ' ' + JSON.stringify(q) + ' -> ' + JSON.stringify(p));
+  });
+})();
+
 console.log('robustness: no layer failed, tiny comp, icon font');
 var bad = res.log.filter(function (t) { return /Error|ERROR|rejected/.test(t); });
 n++; if (bad.length) fails++;

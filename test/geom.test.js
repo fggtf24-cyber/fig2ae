@@ -117,4 +117,12 @@ var gm = g.srgbToGamma([0, 0.5, 1], 2.4);
 near(gm[0], 0); near(gm[1], 0.5262, 1e-3); near(gm[2], 1);
 near(g.srgbToGamma([0.2, 0.2, 0.2], 2.4)[0], 0.2411, 1e-3);
 
+/* shell quoting for the importer's base64 call on macOS: a path is data, never a command */
+assert.strictEqual(g.shellQuote("/a b/c"), "'/a b/c'");
+assert.strictEqual(g.shellQuote("it's"), "'it'\\''s'");
+if (process.platform !== 'win32') {
+  var nasty = "$(echo pwned) `id` it's \"x\"";
+  assert.strictEqual(require('child_process').execSync('printf %s ' + g.shellQuote(nasty), { encoding: 'utf8' }), nasty);
+}
+
 console.log('geom: all checks passed');

@@ -6,7 +6,7 @@
  * Fig2AE.zip (make-release.js). When version.txt on GitHub is newer, Fig2AE.zip is
  * downloaded and unpacked over the installed copy:
  *   cep/          -> this extension's folder (takes effect after After Effects restarts)
- *   figma-plugin/ -> the Figma plugin folder written by install.ps1 / install.js (next plugin run)
+ *   figma-plugin/ -> the Figma plugin folder written by the installers (next plugin run)
  *   ae/Fig2AE Panel.jsx -> the fallback ScriptUI panel of every AE version
  * State goes to <settings dir>/update.json for the panel and the Figma plugin.
  */
@@ -50,6 +50,7 @@ function get(url, asFile, hops, asText) {
       if (asFile) {
         var out = fs.createWriteStream(asFile);
         res.pipe(out);
+        res.on('aborted', function () { reject(new Error('download interrupted')); });
         out.on('finish', function () { out.close(function () { resolve(asFile); }); });
         out.on('error', reject);
       } else {
@@ -110,7 +111,7 @@ function check(current, opts) {
       if (!/^\d+(\.\d+)*$/.test(s.latest)) throw new Error('bad version.txt on GitHub: ' + s.latest.slice(0, 40));
       if (!newer(s.latest, current)) { s.status = 'latest'; return writeState(s); }
       var prev = state();
-      if (prev.status === 'installed' && prev.latest === s.latest) { s.status = 'installed'; return writeState(s); }   // waiting for an AE restart
+      if (prev.status === 'installed' && prev.latest === s.latest) { s.status = 'installed'; s.restart = prev.restart; return writeState(s); }   // waiting for an AE restart
       if (opts.install === false) { s.status = 'available'; return writeState(s); }
 
       var tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fig2ae-update-'));

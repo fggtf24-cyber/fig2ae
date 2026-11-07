@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.10';
+var VERSION = '0.4.11';
 var updater = require(path.join(__dirname, 'updater.js'));
 
 var PORT = 7251;
@@ -73,8 +73,8 @@ function importCode(file, opts) {
   return '(function(){var g=$.global,err="";g.F2A_QUIET=true;g.F2A_LAST=null;' +
     'g.F2A_OPTS=' + JSON.stringify(opts || null) + ';' +
     'try{$.evalFile(new File(' + JSON.stringify(file.split(path.sep).join('/')) + '));}catch(e){err=String(e);}' +
-    'g.F2A_QUIET=false;g.F2A_OPTS=null;var r=g.F2A_LAST;if(!r)return "ERR\\t"+err;' +
-    'return "OK\\t"+(r.comp?r.comp.name:"")+"\\t"+r.secs+"\\t"+r.log.join("\\u0001").replace(/[\\t\\r\\n]+/g," ")+"\\t"+(r.mode||"new");})()';
+    'g.F2A_QUIET=false;g.F2A_OPTS=null;var r=g.F2A_LAST;if(!r)return "ERR\\t"+(err||"the import did not start. Turn on Allow Scripts to Write Files and Access Network in the Scripting & Expressions settings of After Effects");' +
+    'return "OK\\t"+(r.comp?r.comp.name.replace(/[\\t\\r\\n]+/g," "):"")+"\\t"+r.secs+"\\t"+r.log.join("\\u0001").replace(/[\\t\\r\\n]+/g," ")+"\\t"+(r.mode||"new");})()';
 }
 
 function parseResult(out) {
@@ -102,6 +102,17 @@ function progressWindow(compName) {
       '-File', path.join(__dirname, 'progress.ps1'), '-Dir', settingsDir(), '-Name64', Buffer.from(String(compName || ''), 'utf8').toString('base64')],
       { windowsHide: true, stdio: 'ignore' });
   } catch (e) { logEvent('error', 'progress window: ' + e.message); return null; }
+}
+
+/**
+ * The file name from the request URL. It ends up in a shell command on macOS (the importer's base64 call)
+ * and any web page can POST here, so only what the Figma plugin itself produces gets through.
+ */
+function safeName(url) {
+  var q = /[?&]name=([^&]*)/.exec(url), name = '';
+  try { name = q ? decodeURIComponent(q[1]) : ''; } catch (e) {}
+  name = name.replace(/[^\wЀ-ӿ.-]+/g, '_');
+  return /^fig2ae_.*\.jsx$/.test(name) ? name : 'fig2ae_comp.jsx';
 }
 
 function stamp() {
@@ -133,8 +144,15 @@ function start(evalHost, opts) {
     if (!doc || doc.app !== 'fig2ae' || !doc.comp) throw new Error('not a Fig2AE export');
     var jsx = importer.makeJsx(body, importer.runtime);
     var set = readSettings(settingsFile);
-    var folder = path.join(exportsDir(set), stamp() + (++seq > 1 ? '_' + seq : ''));
-    fs.mkdirSync(folder, { recursive: true });
+    var sub = stamp() + (++seq > 1 ? '_' + seq : ''), folder = path.join(exportsDir(set), sub), moved = null;
+    try { fs.mkdirSync(folder, { recursive: true }); }
+    catch (e) {
+      // macOS can keep Documents off limits to After Effects, a chosen folder can be gone: the import still goes
+      moved = path.dirname(folder);
+      folder = path.join(settingsDir(), 'exports', sub);
+      fs.mkdirSync(folder, { recursive: true });
+      logEvent('error', 'cannot write to ' + moved + ' (' + e.code + '), using ' + folder);
+    }
     var file = path.join(folder, name);
     fs.writeFileSync(file, jsx, 'utf8');
     var win = opts.dir ? null : progressWindow(doc.comp.name);
@@ -142,7 +160,9 @@ function start(evalHost, opts) {
       for (var waited = 0; ; waited += retryMs) {
         var out = await evalHost(importCode(file, { target: set.target, parametric: set.parametric, precompGroups: set.precompGroups }));
         if (out !== BUSY) {
-          var r = parseResult(out); r.file = file; lastResult(r, doc);
+          var r = parseResult(out); r.file = file;
+          if (moved && r.log) r.log.unshift('No access to "' + moved + '": images of this import are in "' + folder + '"');
+          lastResult(r, doc);
           logEvent(r.ok ? 'import' : (r.cancelled ? 'import' : 'error'),
                    r.ok ? 'imported "' + r.comp + '" (' + r.mode + ', ' + r.secs.toFixed(1) + ' s)' : (r.cancelled ? 'import cancelled by the user' : 'import failed: ' + r.error),
                    { settings: set, aeLog: r.log, figmaWarnings: doc.warnings || [], file: file, raw: r.ok || r.cancelled ? undefined : String(out).slice(0, 2000) });
@@ -211,9 +231,7 @@ function start(evalHost, opts) {
     var chunks = [];
     req.on('data', function (c) { chunks.push(c); });
     req.on('end', function () {
-      var q = /[?&]name=([^&]*)/.exec(req.url);
-      var name = (q ? decodeURIComponent(q[1]) : '').replace(/[\\\/:*?"<>|]+/g, '_');
-      if (!/^fig2ae_.*\.jsx$/.test(name)) name = 'fig2ae_comp.jsx';
+      var name = safeName(req.url);
       var body = Buffer.concat(chunks).toString('utf8');
       busy++;
       queue = queue.then(function () { return run(name, body); })
@@ -269,6 +287,6 @@ function start(evalHost, opts) {
   return server;
 }
 
-module.exports = { start: start, logEvent: logEvent, importCode: importCode, parseResult: parseResult, readSettings: readSettings, writeSettings: writeSettings,
+module.exports = { start: start, logEvent: logEvent, importCode: importCode, parseResult: parseResult, safeName: safeName, readSettings: readSettings, writeSettings: writeSettings,
                    requestCancel: requestCancel,
                    settingsDir: settingsDir, DEFAULTS: DEFAULTS, PORT: PORT, BUSY: BUSY, VERSION: VERSION };

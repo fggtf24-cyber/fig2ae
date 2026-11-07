@@ -34,6 +34,11 @@ U.check('0.0.1', { cepDir: cepDir }).then(function (s) {
   assert.notStrictEqual(fs.readFileSync(path.join(cepDir, 'server.js'), 'utf8'), 'old', 'расширение обновлено');
   assert.ok(fs.existsSync(path.join(cepDir, 'panel', 'host.jsx')));
   assert.notStrictEqual(fs.readFileSync(path.join(plugin, 'code.js'), 'utf8'), 'old', 'плагин Figma обновлён');
+  // the next check before the restart must not forget that a restart is needed
+  return U.check('0.0.1', { cepDir: cepDir });
+}).then(function (s) {
+  assert.strictEqual(s.status, 'installed');
+  assert.strictEqual(s.restart, true, 'повторная проверка не теряет «нужен перезапуск»');
   // same manifest (only versions differ): applied live, no AE restart
   served['version.txt'] = '9.9.10';
   return U.check('9.9.9', { cepDir: cepDir });

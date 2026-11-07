@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- asInvoker: a file called "*Setup*.exe" would otherwise get a UAC prompt; everything installs per user -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="0.4.10.0" name="Fig2AE.Setup" />
+  <assemblyIdentity version="0.4.11.0" name="Fig2AE.Setup" />
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">

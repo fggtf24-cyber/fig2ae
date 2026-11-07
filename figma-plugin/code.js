@@ -68,16 +68,16 @@ function scanInvisible(sel) {
   }
   function walk(kids, c, exempt) {
     for (var i = 0; i < kids.length && budget > 0; i++) {
-      var k = kids[i], all = countAll(k);
-      if (!visible(k)) { cut += all; total += all; budget -= all; continue; }
+      var k = kids[i], all;
+      if (!visible(k)) { all = countAll(k); cut += all; total += all; budget -= all; continue; }
       if (k.isMask) {
         if (!exempt && off(k, c)) { for (var j = i; j < kids.length; j++) { var a = countAll(kids[j]); cut += a; total += a; } return; }
         c = meet(c, box(k, true));                       // what the mask lets through, for everything above it
       }
-      if (!exempt && off(k, c)) { cut += all; total += all; budget -= all; continue; }
+      if (!exempt && off(k, c)) { all = countAll(k); cut += all; total += all; budget -= all; continue; }
       total++; budget--;
       if ('children' in k && !rasterMarked(k)) walk(k.children, k.clipsContent === true ? meet(c, box(k, false)) : c, false);
-      else if ('children' in k) total += all - 1;
+      else if ('children' in k) total += countAll(k) - 1;
     }
   }
   if (!sel.length) return null;
@@ -330,6 +330,7 @@ async function emitNodeExact(node, M, out, o) {
     await emitSelf(node, M, o, out, false, 'fills');
     await emitChildren(node.children, M, out, o);
     await emitSelf(node, M, o, out, true, 'strokes');
+    if (!visible(node)) for (var h = start; h < out.length; h++) out[h].hidden = true;
     if (gid) {
       if (out.length === start + 1) out.length = start;          // nothing inside: no null either
       else for (var g = start + 1; g < out.length; g++) tagGroup(out[g], gid);

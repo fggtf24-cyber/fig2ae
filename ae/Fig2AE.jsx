@@ -34,7 +34,8 @@
     function main() {
         if (!canWriteFiles()) {
             alert('Fig2AE needs permission to write files (images and gradients).\n\n' +
-                  'Edit > Preferences > Scripting & Expressions >\n"Allow Scripts to Write Files and Access Network".');
+                  ($.os.indexOf('Windows') >= 0 ? 'Edit > Preferences' : 'After Effects > Settings') +
+                  ' > Scripting & Expressions >\n"Allow Scripts to Write Files and Access Network".');
             return;
         }
         var doc, assetsDir;
@@ -194,7 +195,8 @@
                 // a new Figma reference replaces the one from the previous import (the new one is among the top layers)
                 var hasRef = false;
                 for (var r = 0; r < doc.comp.layers.length; r++) if (doc.comp.layers[r].guide) hasRef = true;
-                if (hasRef) for (var q = target.numLayers; q > target.numLayers - n0; q--) {
+                var firstOld = target.numLayers - n0;
+                if (hasRef) for (var q = target.numLayers; q > firstOld; q--) {
                     var old = target.layer(q);
                     if (old.comment === REF_TAG) { old.locked = false; old.remove(); }
                 }
@@ -358,6 +360,7 @@
     function shiftLayer(L, dx, dy) {
         if (!L) return;
         if (L.pos) L.pos = [L.pos[0] + dx, L.pos[1] + dy];
+        if (L.text && L.text.m) L.text.m = [L.text.m[0], L.text.m[1], L.text.m[2], L.text.m[3], L.text.m[4] + dx, L.text.m[5] + dy];   // text is placed through this matrix
         if (L.type === 'bgblur') shiftLayer(L.matte, dx, dy);       // the adjustment layer itself fills the comp
         else if (L.matte) shiftLayer(L.matte.layer, dx, dy);
     }
@@ -941,7 +944,7 @@
         try {
             if (file.exists) file.remove();
             if ($.os.indexOf('Windows') >= 0) system.callSystem('certutil -f -decode "' + tmp.fsName + '" "' + file.fsName + '"');
-            else system.callSystem('base64 -D -i "' + tmp.fsName + '" -o "' + file.fsName + '"');
+            else system.callSystem('base64 -D -i ' + G.shellQuote(tmp.fsName) + ' -o ' + G.shellQuote(file.fsName));
         } catch (e) {}
         tmp.remove();
         if (!file.exists || file.length === 0) writeBinary(file, G.b64decode(b64));
@@ -968,6 +971,7 @@
 
     function writeBinary(file, str) {
         file.encoding = 'BINARY';
+        file.lineFeed = 'Unix';                  // bytes stay as they are on every OS
         if (!file.open('w')) throw new Error('cannot write ' + file.fsName);
         file.write(str);
         file.close();

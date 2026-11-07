@@ -67,6 +67,19 @@
         for (var w = 0; w < 100 && !png.exists; w++) $.sleep(200);     // may finish asynchronously
         $.sleep(500);
         res.png = png.exists;
+
+        // "Current": the same frame into a comp bigger by 100 x 60 lands centred, so every layer moves by 50, 30
+        var big = app.project.items.addComp('current test', c.width + 100, c.height + 60, 1, 2, 25);
+        big.openInViewer();
+        $.global.F2A_OPTS = { target: 'current' };
+        $.global.F2A_LAST = null;
+        $.evalFile(new File(out.fsName + '/scene.jsx'));
+        $.global.F2A_OPTS = null;
+        res.current = { mode: $.global.F2A_LAST && $.global.F2A_LAST.mode };
+        for (var b = 1; b <= big.numLayers; b++) {
+            var bn = big.layer(b).name;
+            if (bn === 'text' || bn === 'linH') res.current[bn] = big.layer(b).transform.position.value;
+        }
         res.ok = true;
     } catch (e) {
         res.errors.push(e.toString() + ' (line ' + e.line + ')');

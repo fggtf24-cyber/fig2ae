@@ -11,12 +11,17 @@ Windows
        Plugins > Development > Import plugin from manifest... > figma-plugin\manifest.json.
 
 macOS
-  1. Close After Effects.
-  2. In Terminal, inside this folder:  node install.js   (needs Node.js)
-  3. After Effects: Edit > Preferences > Scripting & Expressions >
-     turn on "Allow Scripts to Write Files and Access Network", restart AE.
-  4. Figma desktop app: Plugins > Development > Import plugin from manifest...
-     > figma-plugin/manifest.json from this folder (keep the folder where it is).
+  1. Open Terminal (Cmd+Space, type Terminal), paste this line, press Return:
+
+     curl -fsSL https://raw.githubusercontent.com/fggtf24-cyber/fig2ae/main/install-mac.sh | bash
+
+     No Node.js and no password needed. From an unpacked Fig2AE.zip: bash install-mac.sh
+  2. After Effects > Settings > Scripting & Expressions >
+     turn on "Allow Scripts to Write Files and Access Network", restart After Effects.
+     The panel: Window > Extensions > Fig2AE.
+  3. Figma desktop app: Plugins > Development > Import plugin from manifest...
+     In the file dialog press Cmd+Shift+G, paste (the installer put the path in the clipboard), press Return.
+  Remove: the same line with  | bash -s -- --uninstall  at the end.
 
 USE
 
@@ -25,6 +30,7 @@ USE
    "Send selection to After Effects".
 3. That's it: the comp appears in the open AE project in a second or two;
    the plugin window lists whatever was not transferred 1:1.
+   Stop / Cancel of a running import: in the plugin window (on Windows also in a small window over AE).
 
 Plugin options:
 - "Reference frame" — Figma's own render goes on top as a hidden guide layer.
@@ -39,5 +45,6 @@ TIPS
 
 - For exact text install the same fonts (same version) as in Figma.
   Missing fonts are replaced by a default one; icon fonts come over as outlines.
-- Images of each transfer are kept in Documents\Fig2AE — don't delete them
-  while a project uses them.
+- Images of each transfer are kept in Documents/Fig2AE — don't delete them
+  while a project uses them. If macOS denies After Effects access to Documents, they go to
+  ~/Library/Application Support/Fig2AE/exports and the plugin window says so.

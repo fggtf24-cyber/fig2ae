@@ -429,6 +429,9 @@ var F2A_GEOM = (function () {
      * sRGB-encoded colour -> the same colour encoded with a pure power curve
      * (e.g. AE working space "Rec.709 Gamma 2.4": sRGB/709 primaries, gamma 2.4).
      */
+    /** a path as one POSIX shell word: inside double quotes $(...) and backticks would still run */
+    function shellQuote(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
     function srgbToGamma(c, gamma) {
         var out = [];
         for (var k = 0; k < 3; k++) {
@@ -440,6 +443,7 @@ var F2A_GEOM = (function () {
 
     return {
         srgbToGamma: srgbToGamma,
+        shellQuote: shellQuote,
         parsePath: parsePath, arcToCubic: arcToCubic, mul: mul, inv: inv, apply: apply, decompose: decompose,
         bounds: bounds, transformSubs: transformSubs, svd2: svd2,
         b64decode: b64decode, gradientXml: gradientXml, gradientFfx: gradientFfx

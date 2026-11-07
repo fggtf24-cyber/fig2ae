@@ -200,7 +200,17 @@ Glass пропускается с предупреждением.
 Import plugin from manifest…. Удаление — Параметры Windows → Приложения → Fig2AE.
 Exe не подписан: Windows SmartScreen может спросить — «Подробнее» → «Выполнить в любом случае».
 
-**macOS:** `node install.js` из `Fig2AE.zip`.
+**macOS — одна строка в Терминале**, без Node.js и пароля:
+```bash
+curl -fsSL https://raw.githubusercontent.com/fggtf24-cyber/fig2ae/main/install-mac.sh | bash
+```
+`curl`, в отличие от браузера, не ставит файлу карантин, поэтому неподписанный установщик Gatekeeper не блокирует.
+В конце скрипт кладёт путь к `manifest.json` в буфер: в диалоге Figma ⌘⇧G, вставить, Return (папка Library скрыта).
+Удаление: та же строка с `| bash -s -- --uninstall`. Из распакованного `Fig2AE.zip`: `bash install-mac.sh`.
+
+На Mac нет отдельного окна прогресса (оно на PowerShell): Stop и Cancel — в окне плагина Figma, они работают так же.
+Настройка разрешения в AE на Mac: After Effects → Settings → Scripting & Expressions.
+`test/mac-install.test.sh` гоняет установщик на настоящем macOS в GitHub Actions (`macos-latest`).
 
 Сборка: `node make-release.js` (exe компилируется `csc.exe`, который есть в любой Windows, или mono `mcs`;
 `installer/Setup.cs`, `Fig2AE.zip` встроен ресурсом). `FIG2AE_TEST_ROOT=<папка>` уводит все пути и ключи реестра
