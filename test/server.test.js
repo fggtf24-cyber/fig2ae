@@ -52,11 +52,13 @@ server.on('listening', function () {
         assert.ok(jsx.indexOf('﻿// Fig2AE') === 0 && jsx.indexOf('var F2A_DATA = ') > 0 && jsx.indexOf('F2A-PAYLOAD-END') > 0, 'сервер сам собирает .jsx из данных');
         assert.ok(calls[1].indexOf(JSON.stringify(r.file.split(path.sep).join('/'))) > 0, 'AE получает путь к файлу');
         assert.deepStrictEqual(srv.parseResult('ERR\tboom'), { ok: false, error: 'boom' });
-        rejectCode(port, function () {
+        var cr = srv.parseResult('OK\t\t0.5\t\tcancelled');
+        assert.ok(!cr.ok && cr.cancelled && /cancelled/.test(cr.error), 'отменённый импорт — не ошибка, а отмена');
+        rejectCode(port, function () { noCancel(port, function () {
           console.log('server: all checks passed');
           server.close();
           fs.rmSync(dir, { recursive: true, force: true });
-        });
+        }); });
         return;
       } catch (e) { console.error(e); process.exitCode = 1; }
       server.close();
@@ -64,6 +66,19 @@ server.on('listening', function () {
   });
   req.end(body);
 });
+
+// Stop / Cancel with no import running: nothing to do, nothing written
+function noCancel(port, done) {
+  var req = http.request({ host: '127.0.0.1', port: port, method: 'POST', path: '/cancel?how=cancel' }, function (res) {
+    var data = '';
+    res.on('data', function (c) { data += c; });
+    res.on('end', function () {
+      try { assert.strictEqual(JSON.parse(data).ok, false, data); } catch (e) { console.error(e); process.exitCode = 1; }
+      done();
+    });
+  });
+  req.end();
+}
 
 // code instead of data (any web page can POST to localhost) is refused and never reaches AE
 function rejectCode(port, done) {

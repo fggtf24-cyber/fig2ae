@@ -56,8 +56,8 @@ fs.mkdirSync(DIST, { recursive: true });
 var zip = path.join(DIST, 'Fig2AE.zip');
 if (fs.existsSync(zip)) fs.rmSync(zip);
 if (process.platform === 'win32') {
-  cp.execFileSync('powershell', ['-NoProfile', '-Command',
-    "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory('" + stage + "', '" + zip + "')"]);
+  // Windows' own bsdtar: entries with "/" (ZipFile of .NET Framework writes "cep\server.js", which macOS unpacks as a file name)
+  cp.execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-a', '-c', '-f', zip].concat(fs.readdirSync(stage)), { cwd: stage });
 } else {
   cp.execFileSync('zip', ['-qr', zip, '.'], { cwd: stage });
 }

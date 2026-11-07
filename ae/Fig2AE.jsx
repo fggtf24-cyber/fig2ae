@@ -99,27 +99,67 @@
             return '\\u' + ('000' + c.charCodeAt(0).toString(16)).slice(-4);
         }) + '"';
     }
+    function dataDir() {
+        var d = new Folder(Folder.userData.fsName + '/Fig2AE');
+        if (!d.exists) d.create();
+        return d;
+    }
     function writeProgress(state, name) {
         if (!PROG) return;
         try {
-            var d = new Folder(Folder.userData.fsName + '/Fig2AE');
-            if (!d.exists) d.create();
-            var f = new File(d.fsName + '/progress.json');
+            var f = new File(dataDir().fsName + '/progress.json');
             f.encoding = 'UTF-8';
             if (!f.open('w')) return;
             f.write('{"state":"' + state + '","n":' + PROG.n + ',"total":' + PROG.total + ',"t":' + new Date().getTime() +
                     ',"comp":' + jstr(PROG.comp) + ',"layer":' + jstr(name || '') + '}');
             f.close();
+            PROG.last = new Date().getTime();
         } catch (e) {}
     }
+    /**
+     * <user data>/Fig2AE/cancel.txt: the progress window (cep/progress.ps1) writes "stop" (keep what is
+     * built) or "cancel" (take it all out again). AE runs this script on its main thread, so no AE window
+     * can take a click meanwhile; the progress window is a process of its own.
+     */
+    var CANCEL = { f2aCancel: true };
+    function cancelFile() { return new File(dataDir().fsName + '/cancel.txt'); }
     function progress(L) {
         if (!PROG) return;
         PROG.n++;
-        if (PROG.n === 1 || PROG.n % 15 === 0) writeProgress('running', L.name);
+        if (PROG.n === 1 || new Date().getTime() - PROG.last > 200) writeProgress('running', L.name);
+        if (!PROG.hold && PROG.cf.exists) {
+            var f = PROG.cf, how = 'stop';
+            try { f.open('r'); how = f.read(); f.close(); f.remove(); } catch (e) {}
+            PROG.cancel = /cancel/.test(how) ? 'cancel' : 'stop';
+            throw CANCEL;
+        }
+    }
+
+    /* Project panel: Fig2AE / <scene> [ (2), (3)… for repeats ] / main comp, Precomps/, Images/ */
+    var FOLDERS = null;
+    function sceneFolders(name) {
+        var root = app.project.rootFolder, top = null, i;
+        for (i = 1; i <= root.numItems; i++) {
+            var it = root.item(i);
+            if (it instanceof FolderItem && it.name === 'Fig2AE') { top = it; break; }
+        }
+        if (!top) top = app.project.items.addFolder('Fig2AE');
+        var base = String(name || 'Figma').replace(/^\s+|\s+$/g, '') || 'Figma', taken = {};
+        for (i = 1; i <= top.numItems; i++) taken[top.item(i).name] = true;
+        var k = 1, nm = base;
+        while (taken[nm]) nm = base + ' (' + (++k) + ')';
+        var scene = app.project.items.addFolder(nm);
+        scene.parentFolder = top;
+        return { top: top, scene: scene, suffix: k > 1 ? ' (' + k + ')' : '', pre: null, img: null };
+    }
+    function subFolder(key, name) {
+        if (!FOLDERS[key]) { FOLDERS[key] = app.project.items.addFolder(name); FOLDERS[key].parentFolder = FOLDERS.scene; }
+        return FOLDERS[key];
     }
 
     function importDoc(doc, assetsFolder) {
-        PROG = { n: 0, total: countDoc(doc.comp.layers), comp: doc.comp.name || '' };
+        PROG = { n: 0, total: countDoc(doc.comp.layers), comp: doc.comp.name || '', last: 0, cf: cancelFile(), cancel: null, hold: 0 };
+        try { if (PROG.cf.exists) PROG.cf.remove(); } catch (e) {}      // a click left over from an import that already ended
         writeProgress('running', '');
         LOG = [];
         missingFonts = {};
@@ -129,12 +169,13 @@
         var toWorking = colorChecks();
         if (toWorking) recolor(doc.comp, toWorking);
 
-        var t0 = new Date().getTime(), comp = null, opts = readOpts(doc), mode = 'new';
+        var t0 = new Date().getTime(), comp = null, opts = readOpts(doc), mode = 'new', cancelled = null;
+        var target = null, n0 = 0, at = 0;
         app.beginUndoGroup('Fig2AE: import from Figma');
         try {
-            var projFolder = app.project.items.addFolder('Fig2AE — ' + doc.comp.name);
-            var target = opts.target === 'current' ? activeComp() : null;
+            target = opts.target === 'current' ? activeComp() : null;
             if (opts.target === 'current' && !target) note('"Current" is selected, but no composition is active — a new comp was created');
+            FOLDERS = sceneFolders(doc.comp.name);
             // While building, the viewer shows an empty 4×4 comp. Otherwise AE redraws the comp (and its timeline)
             // shown in the viewer after every added layer, which makes big frames take minutes.
             // Opened after reading the active comp: opening it makes it the active item.
@@ -146,30 +187,46 @@
                 if (dx || dy) for (var i = 0; i < doc.comp.layers.length; i++) shiftLayer(doc.comp.layers[i], dx, dy);
                 // precomps get the frame rate and length of the comp they go into
                 doc.fps = target.frameRate; doc.duration = target.duration;
-                // a new Figma reference replaces the one from the previous import
+                n0 = target.numLayers; at = target.time;
+                comp = target;
+                fillComp(target, doc.comp, doc);
+                startAt(target, target.numLayers - n0, at);
+                // a new Figma reference replaces the one from the previous import (the new one is among the top layers)
                 var hasRef = false;
                 for (var r = 0; r < doc.comp.layers.length; r++) if (doc.comp.layers[r].guide) hasRef = true;
-                if (hasRef) for (var q = target.numLayers; q >= 1; q--) {
+                if (hasRef) for (var q = target.numLayers; q > target.numLayers - n0; q--) {
                     var old = target.layer(q);
                     if (old.comment === REF_TAG) { old.locked = false; old.remove(); }
                 }
-                var n0 = target.numLayers, at = target.time;
-                fillComp(target, doc.comp, doc, projFolder);
-                // everything starts at the playhead (new layers are the top ones)
-                for (var t = 1; t <= target.numLayers - n0; t++) {
-                    var nl = target.layer(t), lk = nl.locked;
-                    if (lk) nl.locked = false;
-                    nl.startTime = at;
-                    if (lk) nl.locked = true;
-                }
-                comp = target;
-            } else comp = buildComp(doc.comp, doc, projFolder);
-            if (projFolder.numItems === 0) projFolder.remove();      // nothing went into the project panel
-            comp.openInViewer();
+            } else {
+                doc.comp.name = (doc.comp.name || 'comp') + FOLDERS.suffix;
+                comp = buildComp(doc.comp, doc, true);
+            }
         } catch (e) {
-            LOG.unshift('ERROR (line ' + e.line + '): ' + e.toString());
+            if (e === CANCEL) cancelled = PROG.cancel;
+            else LOG.unshift('ERROR (line ' + e.line + '): ' + e.toString());
         }
-        closeScratch(comp);
+        if (cancelled === 'stop') {
+            // keep what is built: the comp being filled when the click came is complete up to that layer
+            if (target) startAt(target, target.numLayers - n0, at);
+            if (!comp) comp = lastBuilt;
+            LOG.unshift('Stopped by you at layer ' + PROG.n + ' of ' + PROG.total + ' — what was built so far is kept');
+        } else if (cancelled === 'cancel') {
+            // take everything out again: the new layers of the target comp, and the scene folder with its comps and pictures
+            if (target) for (var d = target.numLayers - n0; d >= 1; d--) try { var dl = target.layer(1); dl.locked = false; dl.remove(); } catch (e2) {}
+            try { FOLDERS.scene.remove(); } catch (e3) {}
+            comp = target;
+            mode = 'cancelled';
+        }
+        if (comp && cancelled !== 'cancel') try { comp.openInViewer(); } catch (e4) {}
+        try {
+            if (FOLDERS && FOLDERS.scene && cancelled !== 'cancel') {
+                if (FOLDERS.scene.numItems === 0) FOLDERS.scene.remove();          // "Current" with nothing new for the project panel
+                if (FOLDERS.top.numItems === 0) FOLDERS.top.remove();
+            } else if (FOLDERS && FOLDERS.top.numItems === 0) FOLDERS.top.remove();
+        } catch (e5) {}
+        closeScratch(cancelled === 'cancel' ? target : comp);
+        FOLDERS = null; lastBuilt = null;
         app.endUndoGroup();
         for (var fk in missingFonts) {
             var n = 0, names = [];
@@ -222,23 +279,42 @@
         return Math.max(4, Math.min(30000, v));      // AE: 4..30000; content keeps its place from the top-left
     }
 
-    function buildComp(def, doc, projFolder) {
+    var lastBuilt = null;      // the main comp of a "New Comp" import, as soon as it exists (Stop keeps it)
+    function newComp(def, doc, main) {
         var c = app.project.items.addComp(def.name || 'comp',
             compSide(def.w, def.name), compSide(def.h, def.name),
             1, doc.duration || 10, doc.fps || 30);
-        c.parentFolder = projFolder;
-        fillComp(c, def, doc, projFolder);
+        try { c.parentFolder = main ? FOLDERS.scene : subFolder('pre', 'Precomps'); } catch (e) {}
+        if (main) lastBuilt = c;
+        return c;
+    }
+    function buildComp(def, doc, main) {
+        var c = newComp(def, doc, main);
+        fillComp(c, def, doc);
         return c;
     }
 
+    /** the first k layers of c start at time at (new layers of a "Current" import begin at the playhead) */
+    function startAt(c, k, at) {
+        for (var t = 1; t <= k; t++) {
+            var nl = c.layer(t), lk = nl.locked;
+            if (lk) nl.locked = false;
+            nl.startTime = at;
+            if (lk) nl.locked = true;
+        }
+    }
+
     /** builds def.layers into comp c (a new comp, or the active one in "Current" mode) */
-    function fillComp(c, def, doc, projFolder) {
-        var ctx = { nulls: {}, kids: [] };
+    function fillComp(c, def, doc) {
+        var ctx = { nulls: {}, kids: [] }, stop = null;
         groupCtx.push(ctx);
         // layers[0] is the bottom-most; each new AE layer lands on top
-        for (var i = 0; i < def.layers.length; i++) {
-            try { buildLayer(c, def.layers[i], doc, projFolder); }
-            catch (e) { note('Layer "' + def.layers[i].name + '": ' + e.toString() + ' (line ' + e.line + ')'); }
+        for (var i = 0; i < def.layers.length && !stop; i++) {
+            try { buildLayer(c, def.layers[i], doc); }
+            catch (e) {
+                if (e === CANCEL) stop = e;          // Stop / Cancel: finish this comp's bookkeeping, then unwind
+                else note('Layer "' + def.layers[i].name + '": ' + e.toString() + ' (line ' + e.line + ')');
+            }
         }
         groupCtx.pop();
         // flattened Figma groups: parent their layers to the group null (keeps every layer where it is)
@@ -252,6 +328,7 @@
                 if (lk) lay.locked = true;
             } catch (e) { note('Could not parent "' + lay.name + '" to its group null: ' + e); }
         }
+        if (stop) throw stop;
     }
 
     var groupCtx = [];
@@ -296,11 +373,17 @@
         return o;
     }
 
-    function buildLayer(c, L, doc, projFolder) {
-        progress(L);
-        if (L.type === 'bgblur') return buildBgBlur(c, L, doc, projFolder);
+    /** a layer and its matte are one unit: Stop/Cancel never lands between them (an unmatted picture or blur) */
+    function withMatte(fn) {
+        if (PROG) PROG.hold++;
+        try { return fn(); } finally { if (PROG) PROG.hold--; }
+    }
 
-        var lay;
+    function buildLayer(c, L, doc) {
+        progress(L);
+        if (L.type === 'bgblur') return buildBgBlur(c, L, doc);
+
+        var lay, pending = null;
         if (L.type === 'null') {
             lay = c.layers.addNull();
             lay.comment = 'fig2ae:group';            // "Delete group layers" in the panel removes exactly these
@@ -309,7 +392,12 @@
         else if (L.type === 'shape') lay = buildShape(c, L);
         else if (L.type === 'text') lay = buildText(c, L);
         else if (L.type === 'image') lay = buildImage(c, L);
-        else if (L.type === 'precomp') lay = c.layers.add(buildComp(L.comp, doc, projFolder));
+        else if (L.type === 'precomp') {
+            // Stop inside a precomp: the part built so far still goes into place, then the import unwinds
+            var pc = newComp(L.comp, doc, false);
+            try { fillComp(pc, L.comp, doc); } catch (e) { if (e !== CANCEL) throw e; pending = e; }
+            lay = c.layers.add(pc);
+        }
         if (!lay) return null;
 
         lay.name = L.name;
@@ -340,11 +428,12 @@
         for (var i = 0; i < fx.length; i++) addEffect(lay, fx[i]);
 
         if (L.matte) {
-            var m = buildLayer(c, L.matte.layer, doc, projFolder);     // lands directly above
+            var m = withMatte(function () { return buildLayer(c, L.matte.layer, doc); });     // lands directly above
             if (m) setMatte(lay, m, L.matte.mode);
         }
         if (L.guide) { lay.guideLayer = true; lay.comment = REF_TAG; }   // reference frame: visible in the viewer, never rendered
         if (L.locked) lay.locked = true;    // last: a locked layer rejects edits
+        if (pending) throw pending;
         return lay;
     }
 
@@ -413,14 +502,14 @@
     }
 
     /** Figma background blur: adjustment layer, blurred, matted by the node outline */
-    function buildBgBlur(c, L, doc, projFolder) {
+    function buildBgBlur(c, L, doc) {
         var adj = c.layers.addSolid([1, 1, 1], L.name, c.width, c.height, 1);
         adj.adjustmentLayer = true;
         var b = adj.property('ADBE Effect Parade').addProperty('ADBE Gaussian Blur 2');
         b.property(1).setValue(L.sigma * AE_BLUR_PER_SIGMA);
         try { b.property(3).setValue(1); } catch (e) {}           // repeat edge pixels
         if (L.hidden) adj.enabled = false;
-        var m = buildLayer(c, L.matte, doc, projFolder);
+        var m = withMatte(function () { return buildLayer(c, L.matte, doc); });
         if (m) setMatte(adj, m, 'ALPHA');
         return adj;
     }
@@ -462,6 +551,13 @@
                     tg.property('ADBE Vector Scale').setValue([100, frame.ratio * 100]);
                 }
 
+                if (Gr.stroke && Gr.stroke.offset) {
+                    // inside / outside stroke: the outline moved by half the weight, then a normal stroke on it
+                    var op = items.addProperty('ADBE Vector Filter - Offset');
+                    op.property('ADBE Vector Offset Amount').setValue(Gr.stroke.offset);
+                    try { op.property('ADBE Vector Offset Line Join').setValue({ MITER: 1, ROUND: 2, BEVEL: 3 }[Gr.stroke.join] || 1); } catch (e) {}
+                    try { op.property('ADBE Vector Offset Miter Limit').setValue(Gr.stroke.miter || 4); } catch (e) {}
+                }
                 if (Gr.stroke) addStroke(items, P, Gr.stroke);
                 else if (P.kind === 'solid') addFill(items, P, evenOdd);
                 else addGradient(c, lay, items, P, evenOdd, frame, gIndex);
@@ -563,6 +659,18 @@
         s.property('ADBE Vector Stroke Line Cap').setValue({ NONE: 1, ROUND: 2, SQUARE: 3 }[st.cap] || 1);
         s.property('ADBE Vector Stroke Line Join').setValue(join);
         if (join === 1) s.property('ADBE Vector Stroke Miter Limit').setValue(st.miter);
+        if (st.dash && st.dash.length) {
+            // Figma dashPattern [dash, gap, …] -> AE Dashes (up to 3 pairs, editable and animatable)
+            try {
+                var ds = s.property('ADBE Vector Stroke Dashes');
+                for (var di = 0; di < st.dash.length && di < 6; di++) {
+                    var nm = (di % 2 ? 'ADBE Vector Stroke Gap ' : 'ADBE Vector Stroke Dash ') + (Math.floor(di / 2) + 1);
+                    ds.addProperty(nm).setValue(Math.max(0, st.dash[di]));
+                }
+                // Offset stays hidden (setValue throws) until it is added, unlike in the UI
+                if (st.dashOffset) ds.addProperty('ADBE Vector Stroke Offset').setValue(st.dashOffset);
+            } catch (e) { note('Could not set the dashes of a stroke: ' + e); }
+        }
         shapeBlend(s, P.blend);
         return s;
     }
@@ -849,6 +957,7 @@
             var io = new ImportOptions(file);
             io.importAs = ImportAsType.FOOTAGE;
             item = app.project.importFile(io);
+            try { if (FOLDERS) item.parentFolder = subFolder('img', 'Images'); } catch (e) {}
             try { item.mainSource.alphaMode = AlphaMode.STRAIGHT; } catch (e) {}   // PNG alpha is straight
             imgCache[key] = item;
         }

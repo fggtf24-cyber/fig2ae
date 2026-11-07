@@ -181,7 +181,7 @@ console.log((gok ? '  ok  ' : '  FAIL') + ' ink px ' + inkPx.length + ', left ' 
 console.log('alpha fade (Linear Wipe) vs Figma linear fade');
 [60, 100, 140].forEach(function (x) { var a = (x + 0.5 - 20) / 160; expect('fade', x, 445, gray(1 - a), 0.05); });
 
-console.log('3 stops via 4-Color Gradient vs Figma (approximate by design)');
+console.log('3 stops via shape gradient vs Figma');
 (function () {
   var D = [0.2, 0.2, 0.2], Lm = [0.87, 0.99, 0];
   var worst = 0, at = 0, line = [];
@@ -192,7 +192,7 @@ console.log('3 stops via 4-Color Gradient vs Figma (approximate by design)');
     line.push(x + ':' + d.toFixed(2));
   }
   n++;
-  var ok = worst <= 0.16;
+  var ok = worst <= 0.03;
   if (!ok) fails++;
   console.log((ok ? '  ok  ' : '  FAIL') + ' max deviation ' + worst.toFixed(3) + ' at x=' + at + '  [' + line.join(' ') + ']');
   expect('tri lime stop', 265, 445, Lm, 0.08);

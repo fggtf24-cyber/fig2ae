@@ -405,11 +405,10 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
   // alpha fade -> flat colour + Linear Wipe from the transparent end
   assert.deepStrictEqual(L.fade.fx.solid, [0, 0, 0]);
   near(L.fade.fx.wipe.from[0], 0); near(L.fade.fx.wipe.to[0], 160);
-  // three stops -> 4-Color Gradient with points on the gradient line
-  var f4 = L.tri.fx.four;
-  assert.strictEqual(f4.points.length, 4);
-  near(f4.points[1][0], 160 * 0.404);
-  assert.deepStrictEqual(f4.colors[2], f4.colors[1], 'для 3 стопов дублируется средний');
+  // three stops -> exact shape gradient (no 4-Color Gradient: it blends by distance, not along the line)
+  assert.ok(!L.tri.fx, '3 стопа не должны идти в 4-Color Gradient');
+  var triP = L.tri.groups[0].paint;
+  assert.strictEqual(triP.kind, 'linear'); assert.strictEqual(triP.stops.length, 3);
 
   // fractional letter-spacing reaches AE as a fraction; AE side must round it
   assert.ok(Math.abs(L.text.text.segs[0].tracking - (-0.08 / 24 * 1000)) < 1e-6);
@@ -514,6 +513,93 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
     assert.ok(pr && pr.kind === 'rect', 'прямоугольник — параметрический');
     near(pr.size[0], 160); near(pr.size[1], 60);
     assert.ok(L2.blend.groups[0].param && L2.blend.groups[1].param, 'и у сплошных заливок');
-    console.log('figma: all checks passed (' + first.warnings.length + ' warnings) -> test/out/scene.jsx');
+
+    // "Skip invisible layers": outside the frame, 0% opacity, outside a small alpha mask over a huge group
+    function box(name, x, y, w, h, extra) {
+      var p = { type: 'RECTANGLE', name: name, x: x, y: y, width: w, height: h, fills: [solid(1, 0, 0)], fillGeometry: [{ data: rectPath(w, h), windingRule: 'NONZERO' }] };
+      for (var k in extra || {}) p[k] = extra[k];
+      return node(p);
+    }
+    var inside = box('inside', 100, 100, 50, 40), outside = box('outside', 500, 10, 20, 20), clear = box('clear', 10, 10, 20, 20, { opacity: 0 });
+    var mask2 = box('mask2', 10, 300, 50, 50, { isMask: true, maskType: 'ALPHA' });
+    var bIn = box('bIn', 20, 310, 10, 10), bOut = box('bOut', 900, 900, 10, 10);
+    var big = node({ type: 'GROUP', name: 'big', x: -1000, y: -1000, width: 3000, height: 3000, children: [bIn, bOut] });
+    var mg = node({ type: 'GROUP', name: 'mg', x: 10, y: 300, width: 50, height: 50, children: [mask2, big] });
+    var frame2 = node({ type: 'FRAME', name: 'Scene2', x: 0, y: 0, width: 400, height: 400, clipsContent: true, children: [inside, outside, clear, mg],
+      fills: [solid(0, 0, 0)], fillGeometry: [{ data: rectPath(400, 400), windingRule: 'NONZERO' }] });
+    frame2.parent = { type: 'PAGE' };
+    [frame2, mg, big].forEach(function (p) { p.children.forEach(function (c) { c.parent = p; }); });
+    function names(ls, acc) { ls.forEach(function (l) { acc.push(l.name); if (l.comp) names(l.comp.layers, acc); if (l.matte) names([l.matte.layer], acc); }); return acc; }
+    figma.currentPage.selection = [frame2];
+    return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false, reference: false } }).then(function () {
+      var all = names(JSON.parse(result.json).comp.layers, []);
+      ['inside', 'outside', 'clear', 'bIn', 'bOut'].forEach(function (n) { assert.ok(all.indexOf(n) >= 0, 'без опции ' + n + ' переносится'); });
+      return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false, reference: false, cull: true } });
+    }).then(function () {
+      var d3 = JSON.parse(result.json), all = names(d3.comp.layers, []);
+      assert.ok(all.indexOf('inside') >= 0 && all.indexOf('bIn') >= 0, 'видимое остаётся: ' + all);
+      ['outside', 'clear', 'bOut'].forEach(function (n) { assert.ok(all.indexOf(n) < 0, n + ' не видно — не переносится'); });
+      assert.strictEqual(result.culled, 3);
+      var sc = ctx.scanInvisible([frame2]);           // the live count in the plugin window: the same test
+      assert.strictEqual(sc.cut, 3, JSON.stringify(sc)); assert.strictEqual(sc.total, 9, JSON.stringify(sc));
+      // one element of a frame: the comp is the whole frame, the element keeps its place in it
+      figma.currentPage.selection = [inside];
+      return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false, reference: false, cull: true } });
+    }).then(function () {
+      var d4 = JSON.parse(result.json);
+      d4.keep = true;
+      return d4;
+    }).then(function (d4) {
+      // chart lines: one live AE stroke path, not Figma's expanded outline (hundreds of pieces)
+      var dashed = node({ type: 'LINE', name: 'dashed', x: 0, y: 300, width: 400, height: 0, strokeWeight: 2, strokeAlign: 'INSIDE', dashPattern: [5, 10],
+        strokes: [solid(0.6, 0.6, 0.6)], strokeGeometry: [{ data: 'M0 -2 L5 -2 L5 0 L0 0 Z M15 -2 L20 -2 L20 0 L15 0 Z', windingRule: 'NONZERO' }] });
+      var price = node({ type: 'VECTOR', name: 'price', x: 0, y: 100, width: 400, height: 100, strokeWeight: 5, strokeCap: 'ROUND', strokeJoin: 'ROUND',
+        vectorPaths: [{ data: 'M0 100 L100 40 L200 70 L400 0', windingRule: 'NONE' }],
+        strokes: [{ type: 'GRADIENT_LINEAR', visible: true, opacity: 1, blendMode: 'NORMAL', gradientTransform: [[1, 0, 0], [0, 1, 0]],
+          gradientStops: [{ position: 0, color: { r: 0.36, g: 0.23, b: 0.96, a: 1 } }, { position: 1, color: { r: 0.79, g: 0.66, b: 0.91, a: 1 } }] }],
+        strokeGeometry: [{ data: 'M0 0 L1 1 Z M2 2 L3 3 Z M4 4 L5 5 Z', windingRule: 'NONZERO' }] });
+      // inside stroke on a rounded rect: Figma's strokeGeometry is the doubled band -> live stroke on the outline offset inwards
+      var sel = node({ type: 'RECTANGLE', name: 'sel', x: 10, y: 320, width: 300, height: 40, strokeWeight: 4, strokeAlign: 'INSIDE', cornerRadius: 10,
+        fills: [solid(0.5, 0.2, 0.9, { opacity: 0.12 })], strokes: [solid(0.7, 0.47, 0.96)],
+        fillGeometry: [{ data: rectPath(300, 40), windingRule: 'NONZERO' }], strokeGeometry: [{ data: 'M0 -4 L300 -4 L300 4 L0 4 Z', windingRule: 'NONZERO' }] });
+      // per-side weights (a table row separator): Figma's "Outline stroke" gives the clipped band, mapped back to node space
+      var cell = node({ type: 'FRAME', name: 'cell', x: 10, y: 370, width: 200, height: 20, strokeWeight: MIXED, strokeBottomWeight: 2, strokeAlign: 'INSIDE',
+        strokes: [solid(1, 1, 1)], fills: [], children: [], fillGeometry: [],
+        strokeGeometry: [{ data: 'M0 18 L200 18 L200 22 L0 22 Z', windingRule: 'NONZERO' }],
+        outlineStroke: function () {
+          // an auto-layout parent moves the new vector far away (seen in a real file): the band must still land on the cell
+          return { absoluteTransform: [[1, 0, FX + 8230], [0, 1, FY + 35859]], fillGeometry: [{ data: 'M0 0 L200 0 L200 2 L0 2 Z', windingRule: 'NONZERO' }], remove: function () { this.removed = true; } };
+        } });
+      var chart = node({ type: 'FRAME', name: 'Chart', x: 0, y: 0, width: 400, height: 400, clipsContent: true, children: [price, dashed, sel, cell],
+        fills: [], fillGeometry: [{ data: rectPath(400, 400), windingRule: 'NONZERO' }] });
+      chart.parent = { type: 'PAGE' };
+      [price, dashed, sel, cell].forEach(function (c) { c.parent = chart; });
+      figma.currentPage.selection = [chart];
+      return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false, reference: false } }).then(function () {
+        var d5 = JSON.parse(result.json), L5 = {};
+        d5.comp.layers.forEach(function (l) { L5[l.name] = l; });
+        var dg = L5.dashed.groups[0];
+        assert.ok(dg.stroke, 'пунктир — живая обводка'); assert.deepStrictEqual(dg.stroke.dash, [5, 10]); assert.strictEqual(dg.stroke.dashOffset, 2.5);
+        assert.strictEqual(dg.paths.length, 1); assert.strictEqual(dg.paths[0].d, 'M0 -1 L400 -1', 'линия по середине обводки, сдвинутой на одну сторону');
+        var pg = L5.price.groups[0];
+        assert.ok(pg.stroke && pg.stroke.width === 5 && pg.stroke.cap === 'ROUND', 'градиентная линия — живая обводка');
+        assert.strictEqual(pg.paths[0].d, 'M0 100 L100 40 L200 70 L400 0', 'путь — средняя линия из vectorPaths');
+        assert.ok(L5.price.fx && L5.price.fx.ramp, 'двухцветный градиент обводки — Gradient Ramp');
+        assert.deepStrictEqual(pg.paint.color, [1, 1, 1]);
+        var sg = L5.sel.groups.filter(function (g) { return g.stroke; })[0];
+        assert.ok(sg, 'inside-обводка — живая'); assert.strictEqual(sg.stroke.width, 4); assert.strictEqual(sg.stroke.offset, -2, 'контур сдвинут внутрь на полтолщины');
+        assert.strictEqual(sg.paths[0].d, rectPath(300, 40));
+        var cl = L5['cell · stroke'] || L5.cell;
+        assert.ok(cl, 'обводка ячейки есть: ' + Object.keys(L5));
+        assert.strictEqual(cl.groups[0].paths[0].d, 'M 0 18 L 200 18 L 200 20 L 0 20 Z', 'полоса обрезана Figma (outlineStroke), в координатах узла');
+        return d4;
+      });
+    }).then(function (d4) {
+      assert.strictEqual(d4.comp.w, 400); assert.strictEqual(d4.comp.h, 400);
+      assert.strictEqual(d4.comp.name, 'inside');
+      var el = d4.comp.layers[0];
+      near(el.pos[0] - el.anchor[0], 100); near(el.pos[1] - el.anchor[1], 100);
+      console.log('figma: all checks passed (' + first.warnings.length + ' warnings) -> test/out/scene.jsx');
+    });
   });
 }).catch(function (e) { console.error(e); process.exit(1); });

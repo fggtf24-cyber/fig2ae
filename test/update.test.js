@@ -48,7 +48,9 @@ U.check('0.0.1', { cepDir: cepDir }).then(function (s) {
   var tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fig2ae-bad-'));
   fs.mkdirSync(path.join(tmp, 'cep', 'CSXS'), { recursive: true });
   fs.writeFileSync(path.join(tmp, 'cep', 'CSXS', 'manifest.xml'), 'x');
-  cp.execFileSync('zip', ['-qr', path.join(tmp, 'bad.zip'), 'cep'], { cwd: tmp });
+  if (process.platform === 'win32') {
+    cp.execFileSync('powershell', ['-NoProfile', '-Command', "Compress-Archive -Path '" + path.join(tmp, 'cep') + "' -DestinationPath '" + path.join(tmp, 'bad.zip') + "'"]);
+  } else cp.execFileSync('zip', ['-qr', path.join(tmp, 'bad.zip'), 'cep'], { cwd: tmp });
   served['Fig2AE.zip'] = fs.readFileSync(path.join(tmp, 'bad.zip'));
   return U.check('9.9.10', { cepDir: cepDir });
 }).then(function (s) {

@@ -43,7 +43,48 @@ function rasterMarked(n) { try { return n.getPluginData(RASTER_KEY) === '1'; } c
 function postSelection() {
   var sel = figma.currentPage.selection, marked = 0;
   for (var i = 0; i < sel.length; i++) if (rasterMarked(sel[i])) marked++;
-  figma.ui.postMessage({ type: 'sel', count: sel.length, marked: marked });
+  var scan = null;
+  try { scan = scanInvisible(sel); } catch (e) {}
+  figma.ui.postMessage({ type: 'sel', count: sel.length, marked: marked, scan: scan });
+}
+
+/**
+ * The same test as the export ("Skip invisible layers", see offFrame), run without exporting:
+ * how many layers of the selection can't be seen. Shown live in the plugin window.
+ */
+function scanInvisible(sel) {
+  var total = 0, cut = 0, budget = 30000;
+  function box(n, render) {
+    var b = render ? (n.absoluteRenderBounds || n.absoluteBoundingBox) : n.absoluteBoundingBox;
+    return b ? { x: b.x, y: b.y, x2: b.x + b.width, y2: b.y + b.height } : null;
+  }
+  function meet(a, b) { return !a ? b : !b ? a : { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y), x2: Math.min(a.x2, b.x2), y2: Math.min(a.y2, b.y2) }; }
+  function off(n, c) {
+    if (n.opacity === 0) return true;
+    if (!c) return false;
+    var r = box(n, true);
+    if (!r) return false;
+    return c.x2 <= c.x || c.y2 <= c.y || r.x >= c.x2 - 0.01 || r.x2 <= c.x + 0.01 || r.y >= c.y2 - 0.01 || r.y2 <= c.y + 0.01;
+  }
+  function walk(kids, c, exempt) {
+    for (var i = 0; i < kids.length && budget > 0; i++) {
+      var k = kids[i], all = countAll(k);
+      if (!visible(k)) { cut += all; total += all; budget -= all; continue; }
+      if (k.isMask) {
+        if (!exempt && off(k, c)) { for (var j = i; j < kids.length; j++) { var a = countAll(kids[j]); cut += a; total += a; } return; }
+        c = meet(c, box(k, true));                       // what the mask lets through, for everything above it
+      }
+      if (!exempt && off(k, c)) { cut += all; total += all; budget -= all; continue; }
+      total++; budget--;
+      if ('children' in k && !rasterMarked(k)) walk(k.children, k.clipsContent === true ? meet(c, box(k, false)) : c, false);
+      else if ('children' in k) total += all - 1;
+    }
+  }
+  if (!sel.length) return null;
+  var scene = sceneOf(sel);
+  if (sel.length === 1 && isContainer(sel[0]) && !scene) { total = 1; walk(sel[0].children, box(sel[0], false), false); }
+  else walk(sel, scene ? box(scene, false) : null, true);
+  return { total: total, cut: cut, partial: budget <= 0 };
 }
 figma.on('selectionchange', postSelection);
 
@@ -75,8 +116,8 @@ figma.ui.onmessage = async function (msg) {
   try {
     var doc = await buildDoc(msg.opts);
     var json = JSON.stringify(doc);
-    diag.secs = (Date.now() - t0) / 1000; diag.layers = countLayers(doc.comp.layers);
-    figma.ui.postMessage({ type: 'file', name: 'fig2ae_' + safeName(doc.comp.name) + '.jsx', json: json, warnings: W, bytes: json.length, diag: diag });
+    diag.secs = (Date.now() - t0) / 1000; diag.layers = countLayers(doc.comp.layers); diag.strokes = STATS; diag.culled = culled;
+    figma.ui.postMessage({ type: 'file', name: 'fig2ae_' + safeName(doc.comp.name) + '.jsx', json: json, warnings: W, bytes: json.length, diag: diag, culled: doc.culled || 0 });
   } catch (e) {
     diag.secs = (Date.now() - t0) / 1000; diag.stack = e && e.stack ? String(e.stack).split('\n').slice(0, 10).join('\n') : '';
     figma.ui.postMessage({ type: 'error', message: (e && e.message) ? e.message : String(e), warnings: W, diag: diag });
@@ -115,15 +156,25 @@ async function buildDoc(o) {
   var sel = figma.currentPage.selection;
   if (!sel.length) throw new Error('Nothing selected. Select a frame or layers.');
 
-  var comp;
-  if (sel.length === 1 && isContainer(sel[0])) {
+  CLIPS = []; culled = 0; STATS = { live: 0, offset: 0, outline: 0, clipped: 0 };
+  var comp, scene = sceneOf(sel);
+  if (sel.length === 1 && isContainer(sel[0]) && !scene) {
     var n = sel[0];
     var M = inv(m32(n.absoluteTransform));      // comp space = the frame's own space
     var layers = [], cw = Math.max(1, Math.round(n.width)), ch = Math.max(1, Math.round(n.height));
     if (rasterMarked(n)) await pushRaster(n, M, o, layers);
-    else await containerContent(n, M, o, layers, cw, ch, false);
+    // whatever lies outside the frame is outside the comp too
+    else await withClip(n, o, function () { return containerContent(n, M, o, layers, cw, ch, false); });
     comp = { name: n.name, w: cw, h: ch, layers: layers };
     if (o.reference) await pushReference(n, M, o, layers, '');
+  } else if (scene) {
+    // part of a frame (one element, a group, several layers): the comp is the whole frame and the
+    // layers keep their place in it — "Current" then puts them where they are in the Figma frame
+    var MS = inv(m32(scene.absoluteTransform));
+    var layers3 = [];
+    await withClip(scene, o, function () { return emitChildren(sel, MS, layers3, o, true); });
+    comp = { name: sel.length === 1 ? sel[0].name : scene.name, w: Math.max(1, Math.round(scene.width)), h: Math.max(1, Math.round(scene.height)), layers: layers3 };
+    if (o.reference) for (var r3 = 0; r3 < sel.length; r3++) if (visible(sel[r3])) await pushReference(sel[r3], MS, o, layers3, sel.length > 1 ? sel[r3].name : '');
   } else {
     var bb = unionBounds(sel);
     if (!bb) throw new Error('The selection has no visible bounds.');
@@ -135,7 +186,7 @@ async function buildDoc(o) {
   }
   if (gamutClipped) warn(null, 'the file is Display P3: some colours are outside sRGB and were clipped to the nearest');
 
-  return { v: 3, app: 'fig2ae', target: o.target || null, fps: o.fps, duration: o.duration, scale: o.scale, comp: comp, warnings: W };
+  return { v: 3, culled: culled, app: 'fig2ae', target: o.target || null, fps: o.fps, duration: o.duration, scale: o.scale, comp: comp, warnings: W };
 }
 
 /* ------------------------------------------------------------ dispatch */
@@ -168,15 +219,75 @@ function bakedEffect(node) {
   return null;
 }
 
+/** the top-level frame (a scene) that every selected node lies in, unless a scene itself is selected */
+function sceneOf(sel) {
+  var scene = null;
+  for (var i = 0; i < sel.length; i++) {
+    var top = null;
+    for (var p = sel[i].parent; p && p.type !== 'PAGE' && p.type !== 'DOCUMENT'; p = p.parent) {
+      if (p.parent && (p.parent.type === 'PAGE' || p.parent.type === 'SECTION') &&
+          (p.type === 'FRAME' || p.type === 'COMPONENT' || p.type === 'INSTANCE')) { top = p; break; }
+    }
+    if (!top || (scene && top.id !== scene.id)) return null;
+    scene = top;
+  }
+  return scene;
+}
+
+/**
+ * "Skip invisible layers" (o.cull): a layer is left out when nothing of it can show in the frame —
+ * it lies wholly outside the area that its clipping frames, masks and the exported frame itself
+ * leave visible (at any depth: a huge group under a small alpha mask keeps only what falls in the
+ * mask). A layer that shows even a little travels whole, with its effects (render bounds), and the
+ * layers the user selected explicitly always go. Hidden layers are skipped anyway unless
+ * "Include hidden layers" is on.
+ */
+var CLIPS = [], culled = 0;
+// how strokes went (diagnostic log): live AE stroke / live on an offset outline / Figma outline / of those, clipped by Figma
+var STATS = { live: 0, offset: 0, outline: 0, clipped: 0 };
+function rectOf(n) {
+  var b = n.absoluteRenderBounds || n.absoluteBoundingBox;
+  return b ? { x: b.x, y: b.y, x2: b.x + b.width, y2: b.y + b.height } : null;
+}
+async function withClip(node, o, fn) {
+  var r = o.cull ? rectOf(node) : null;
+  if (r && node.absoluteBoundingBox && node.type !== 'GROUP' && !node.isMask) {
+    // the clip of a frame is its box, not what it renders (shadows draw outside the clip)
+    var bb = node.absoluteBoundingBox; r = { x: bb.x, y: bb.y, x2: bb.x + bb.width, y2: bb.y + bb.height };
+  }
+  if (!r) return fn();
+  var top = CLIPS[CLIPS.length - 1];
+  if (top) r = { x: Math.max(r.x, top.x), y: Math.max(r.y, top.y), x2: Math.min(r.x2, top.x2), y2: Math.min(r.y2, top.y2) };
+  CLIPS.push(r);
+  try { return await fn(); } finally { CLIPS.pop(); }
+}
+/** true when the node can't show: wholly outside the current visible area (render bounds include its effects) */
+function offFrame(n, o) {
+  if (!o.cull) return false;
+  if (n.opacity === 0) return true;                                   // fully transparent: nothing to see either
+  if (!CLIPS.length) return false;
+  var c = CLIPS[CLIPS.length - 1], r = rectOf(n);
+  if (!r) return false;
+  if (c.x2 - c.x <= 0 || c.y2 - c.y <= 0) return true;               // nothing of the clip is left on screen
+  return r.x >= c.x2 - 0.01 || r.x2 <= c.x + 0.01 || r.y >= c.y2 - 0.01 || r.y2 <= c.y + 0.01;
+}
+function countAll(n) { var c = 1; if ('children' in n) for (var i = 0; i < n.children.length; i++) c += countAll(n.children[i]); return c; }
+
 /** children in order; a mask takes everything above it into a matted precomp */
-async function emitChildren(kids, M, out, o) {
+async function emitChildren(kids, M, out, o, exempt) {
+  var test = !exempt && !!o.cull;
   for (var i = 0; i < kids.length; i++) {
     var k = kids[i];
     if (k.isMask && visible(k)) {
+      if (test && offFrame(k, o)) {                // the mask itself can't show: nothing it masks can
+        for (var j = i; j < kids.length; j++) culled += countAll(kids[j]);
+        return;
+      }
       var L = await maskedLayer(k, kids.slice(i + 1), M, o);
       if (L) out.push(L);
       return;
     }
+    if (test && visible(k) && offFrame(k, o)) { culled += countAll(k); continue; }
     await emitNode(k, M, out, o);
   }
 }
@@ -472,8 +583,7 @@ function sameColor(a, b) { return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) 
  * A linear gradient as AE effects, when they can carry it:
  *   2 stops, one alpha          -> Gradient Ramp (or a plain colour)
  *   2 stops, alpha 0 -> a       -> colour as above + Linear Wipe for the fade
- *   3-4 stops, one alpha        -> 4-Color Gradient, points on the gradient line (approximate)
- * Otherwise null: the gradient stays an exact shape gradient.
+ * Otherwise (3+ stops, other alpha fades) null: the gradient stays an exact shape gradient.
  */
 function linearFx(stops, A, B) {
   var n = stops.length, d = [B[0] - A[0], B[1] - A[1]];
@@ -496,12 +606,9 @@ function linearFx(stops, A, B) {
     }
     return fx;
   }
-  if ((n === 3 || n === 4) && amax - amin < 1e-3) {
-    // 3 stops: the middle one doubled — measured in AE: mean error 0.06 vs 0.07 doubling an end
-    var order = n === 3 ? [0, 1, 1, 2] : [0, 1, 2, 3], pts = [], cols = [];
-    for (i = 0; i < 4; i++) { var s = stops[order[i]]; pts.push(at(s.pos)); cols.push(s.color); }
-    return { four: { points: pts, colors: cols }, alpha: amax };
-  }
+  // 3+ stops: no 4-Color Gradient — it blends by distance to 4 points, so a full-frame linear
+  // gradient gets a dark/light blob around each point (seen on 1920x1080 backgrounds).
+  // The shape-layer gradient is exact for any number of stops.
   return null;
 }
 
@@ -545,13 +652,106 @@ function strokeMode(node, strokes) {
   if (csp && csp.type === 'BRUSH') { warn(node, 'brush stroke — outline transferred, the brush texture is not'); return 'outline'; }
   if (csp && csp.type === 'DYNAMIC') return 'outline';
   if (node.variableWidthPoints && node.variableWidthPoints.length) return 'outline';
-  if (node.strokeAlign !== 'CENTER') return 'outline';
-  if (node.dashPattern && node.dashPattern.length) return 'outline';
+  // a line has no inside: Figma just shifts its stroke to one side (strokeCenter() finds it).
+  // A closed outline with an inside/outside stroke: the path offset by half the weight (AE Offset Paths) carries it exactly.
+  if (node.strokeAlign !== 'CENTER' && node.type !== 'LINE' && !closedOutline(node)) return 'outline';
+  // AE Dashes: up to 3 dash/gap pairs (an odd Figma pattern repeats twice, like SVG)
+  var dp = node.dashPattern || [];
+  if (dp.length && (dp.length % 2 ? 2 * dp.length : dp.length) > 6) return 'outline';
   if (node.strokeWeight === figma.mixed) return 'outline';
   if (node.strokeCap !== 'NONE' && node.strokeCap !== 'ROUND' && node.strokeCap !== 'SQUARE') return 'outline'; // arrows, mixed
   if (node.strokeJoin === figma.mixed) return 'outline';
-  for (var i = 0; i < strokes.length; i++) if (strokes[i].kind !== 'solid') return 'outline';
+  // solid, or a gradient that AE effects carry (white live stroke + Gradient Ramp / Linear Wipe)
+  for (var i = 0; i < strokes.length; i++) if (strokes[i].kind !== 'solid' && !strokes[i].fx) return 'outline';
   return 'live';
+}
+
+/** every contour closed (frames, rectangles, ellipses, closed vectors): inside / outside mean something */
+function closedOutline(node) {
+  if (!geomPaths(node.fillGeometry).length) return false;
+  var vp = ('vectorPaths' in node && node.vectorPaths) ? node.vectorPaths : [];
+  for (var i = 0; i < vp.length; i++) {
+    var subs = String(vp[i].data).split(/(?=M)/i);
+    for (var k = 0; k < subs.length; k++) if (/\S/.test(subs[k]) && !/Z\s*$/i.test(subs[k])) return false;
+  }
+  return true;
+}
+
+/** "M 1 2 L 3 4 C … Z" (Figma geometry: absolute M L C Q Z) mapped by the 2x3 matrix m */
+function transformD(d, m) {
+  var t = String(d).match(/[MLCQZ]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [], out = [], i = 0;
+  while (i < t.length) {
+    var c = t[i];
+    if (/^[MLCQZ]$/i.test(c)) { out.push(c.toUpperCase()); i++; continue; }
+    var p = apply(m, [parseFloat(t[i]), parseFloat(t[i + 1])]);
+    out.push(p[0] + ' ' + p[1]); i += 2;
+  }
+  return out.join(' ');
+}
+
+/** bounds of path data (all points, control points too: fine for stroke bands) */
+function boxOfPaths(ps) {
+  var b = null;
+  for (var i = 0; i < ps.length; i++) {
+    var n = String(ps[i].d).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [];
+    for (var k = 0; k + 1 < n.length; k += 2) {
+      var x = parseFloat(n[k]), y = parseFloat(n[k + 1]);
+      if (!b) b = { x: x, y: y, x2: x, y2: y };
+      else { b.x = Math.min(b.x, x); b.y = Math.min(b.y, y); b.x2 = Math.max(b.x2, x); b.y2 = Math.max(b.y2, y); }
+    }
+  }
+  return b;
+}
+
+/**
+ * Figma's strokeGeometry of an INSIDE / OUTSIDE stroke is the full band around the edge (twice the
+ * weight), meant to be clipped by the shape — taken as is, the stroke looks twice as thick. Figma's own
+ * "Outline stroke" gives the clipped outline; in node space. null in read-only files.
+ */
+function clippedStroke(node) {
+  var v = null;
+  try {
+    v = node.outlineStroke();
+    if (!v) return null;
+    var m = mul(inv(m32(node.absoluteTransform)), m32(v.absoluteTransform)), out = [];
+    var g = v.fillGeometry || [];
+    for (var i = 0; i < g.length; i++) out.push({ d: transformD(g[i].data, m), evenOdd: g[i].windingRule === 'EVENODD' });
+    if (!out.length) return null;
+    // The new vector lands in the node's parent, and an auto-layout parent moves it (seen: thousands of px off).
+    // Its outer extent is known though: INSIDE — the full band cut to the node's box; OUTSIDE — the full band.
+    var band = boxOfPaths(geomPaths(node.strokeGeometry)), got = boxOfPaths(out);
+    if (band && got) {
+      var want = node.strokeAlign === 'INSIDE'
+        ? { x: Math.max(band.x, 0), y: Math.max(band.y, 0), x2: Math.min(band.x2, node.width), y2: Math.min(band.y2, node.height) }
+        : band;
+      var dx = want.x - got.x, dy = want.y - got.y;
+      if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) for (var k = 0; k < out.length; k++) out[k].d = transformD(out[k].d, [1, 0, 0, 1, dx, dy]);
+    }
+    return out;
+  } catch (e) { return null; }
+  finally { try { if (v) v.remove(); } catch (e2) {} }
+}
+
+/** the path a live stroke follows, in node space: Figma's vector paths; a LINE is its own segment */
+function strokeCenter(node) {
+  if (node.type === 'LINE') {
+    // the line runs along x; its stroke is not always centred on y = 0 (measured: a 2 px line drawn at y -2..0),
+    // so the path goes through the middle of the stroke Figma actually draws
+    var y = 0, sg = node.strokeGeometry || [], ys = [];
+    for (var i = 0; i < sg.length; i++) {
+      var nums = String(sg[i].data).match(/-?\d*\.?\d+(?:e-?\d+)?/gi) || [];
+      for (var k = 1; k < nums.length; k += 2) ys.push(parseFloat(nums[k]));
+    }
+    if (ys.length) y = (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2;
+    return [{ d: 'M0 ' + y + ' L' + (node.width || 0) + ' ' + y, evenOdd: false }];
+  }
+  return ('vectorPaths' in node && node.vectorPaths && node.vectorPaths.length) ? geomPaths(node.vectorPaths) : geomPaths(node.fillGeometry);
+}
+function dashesOf(node) {
+  var dp = (node.dashPattern || []).slice(0);
+  if (!dp.length) return null;
+  if (dp.length % 2) dp = dp.concat(dp);
+  return dp;
 }
 
 function sampleStops(stops, t) {
@@ -701,16 +901,36 @@ async function nodeParts(node, M, o, selfOnly, which) {
 
   // strokes on top
   var mode = strokeMode(node, strokes);
+  if (mode !== 'none') STATS[mode === 'live' ? (node.strokeAlign !== 'CENTER' && node.type !== 'LINE' ? 'offset' : 'live') : 'outline']++;
   if (mode === 'live') {
-    var base = ('vectorPaths' in node && node.vectorPaths && node.vectorPaths.length) ? geomPaths(node.vectorPaths) : fillPaths;
+    // one editable path with an AE stroke (dashes too), not Figma's expanded outline of it
+    var base = strokeCenter(node);
     if (!base.length) mode = 'outline';
     else for (i = 0; i < strokes.length; i++) {
-      run.push(withParam({ paths: base, paint: strokes[i], stroke: { width: node.strokeWeight, cap: node.strokeCap, join: node.strokeJoin, miter: node.strokeMiterLimit || 4 } }, param));
+      var st = { width: node.strokeWeight, cap: node.strokeCap, join: node.strokeJoin, miter: node.strokeMiterLimit || 4, dash: dashesOf(node) };
+      // Figma centres the first dash on the start of the path (measured: a 10/10 pattern starts with 5 px): AE Offset = dash / 2
+      if (st.dash) st.dashOffset = st.dash[0] / 2;
+      // inside / outside on a closed outline: the stroke runs along the outline moved by half its weight
+      if (node.strokeAlign === 'INSIDE' && node.type !== 'LINE') st.offset = -node.strokeWeight / 2;
+      if (node.strokeAlign === 'OUTSIDE' && node.type !== 'LINE') st.offset = node.strokeWeight / 2;
+      if (strokes[i].kind === 'solid') { run.push(withParam({ paths: base, paint: strokes[i], stroke: st }, param)); continue; }
+      // gradient stroke: a white live stroke on a layer of its own, coloured by Gradient Ramp / Linear Wipe
+      flush();
+      var SP = strokes[i];
+      var SL = nodeShape(node, M, [{ paths: base, paint: { kind: 'solid', color: SP.fx.solid || [1, 1, 1], opacity: SP.opacity * SP.fx.alpha, blend: 'NORMAL' }, stroke: st }],
+                         which === 'strokes' || !fills.length ? label : label + ' · stroke');
+      SL.blend = SP.blend; SL.fx = SP.fx;
+      parts.push(SL);
     }
   }
   if (mode === 'outline') {
     // inside/outside/dashed/arrows/variable width: Figma already expanded it exactly
     var sp = geomPaths(node.strokeGeometry);
+    if (sp.length && node.strokeAlign !== 'CENTER' && node.type !== 'LINE') {
+      var cs = clippedStroke(node);
+      if (cs) { sp = cs; STATS.clipped++; }
+      else warn(node, node.strokeAlign.toLowerCase() + ' stroke could not be clipped (read-only file?) — it may look up to twice as thick');
+    }
     if (sp.length) for (i = 0; i < strokes.length; i++) {
       if (isVectorPaint(strokes[i]) && !strokes[i].fx) { run.push({ paths: sp, paint: strokes[i] }); continue; }
       flush();
@@ -856,13 +1076,18 @@ async function imagePixels(p) {
   var key = p.imageHash + (filtered ? JSON.stringify(f) : '');
   if (imageCache[key]) return imageCache[key];
   var img = figma.getImageByHash(p.imageHash);
-  if (!img) return null;
-  var size = await img.getSizeAsync();
-  var res = null;
-  if (!filtered) {
-    var bytes = await img.getBytesAsync();
-    var ext = sniff(bytes);
+  if (!img) throw new Error('Figma has no image for this fill');
+  var size = null, res = null;
+  // a picture Figma has not loaded yet (off screen, never shown) can fail here: Figma renders it below instead
+  try { size = await img.getSizeAsync(); } catch (e) { size = null; }
+  if (!filtered && size) {
+    var bytes = null;
+    try { bytes = await img.getBytesAsync(); } catch (e) { bytes = null; }
+    var ext = bytes ? sniff(bytes) : null;
     if (ext) res = { bytes: bytes, ext: ext, w: size.width, h: size.height };
+  }
+  if (!size) {
+    try { size = await img.getSizeAsync(); } catch (e) { throw new Error('the picture did not load in Figma (' + ((e && e.message) || e) + ')'); }
   }
   if (!res) {
     // filters or a format AE can't open (webp, gif…): let Figma render the full image once
@@ -907,9 +1132,20 @@ function imagePlacement(p, w, h, iw, ih) {
 }
 
 async function imageLayer(node, M, o, P, name) {
-  var img = null;
-  try { img = await imagePixels(P.raw); } catch (e) { img = null; }
-  if (!img) { warn(node, 'could not get the image from Figma — skipped'); return null; }
+  var img = null, why = '';
+  try { img = await imagePixels(P.raw); } catch (e) { img = null; why = (e && e.message) || String(e); }
+  if (!img) {
+    // last resort: Figma's own pixels of this fill (exact, not movable inside its shape)
+    var r = null;
+    try { r = await rasterLayer(node, M, o, { noChildren: true, noEffects: true }); } catch (e2) { r = null; }
+    if (r) {
+      warn(node, 'the picture could not be read (' + (why || 'unknown reason') + ') — Figma\'s pixels of it used instead');
+      r.name = name; r.opacity = 100; r.blend = 'NORMAL';
+      return r;
+    }
+    warn(node, 'could not get the image from Figma (' + (why || 'unknown reason') + ') — skipped');
+    return null;
+  }
   var w = node.width || 1, h = node.height || 1;
   var lm = mul(M, mul(m32(node.absoluteTransform), imagePlacement(P.raw, w, h, img.w, img.h)));
   var L = baseLayer(node, xform(node, lm, img.w, img.h));
@@ -1228,11 +1464,16 @@ async function textParts(node, M, o) {
  */
 async function containerContent(node, innerM, o, layers, w, h, padded) {
   await emitSelf(node, innerM, o, layers, true, 'fills');
-  if (node.clipsContent === true && (padded || !plainRect(node))) {
+  var clips = node.clipsContent === true;
+  var kidsOf = function (out) {
+    return clips ? withClip(node, o, function () { return emitChildren(node.children, innerM, out, o); })
+                 : emitChildren(node.children, innerM, out, o);
+  };
+  if (clips && (padded || !plainRect(node))) {
     var kids = [];
-    await emitChildren(node.children, innerM, kids, o);
+    await kidsOf(kids);
     if (kids.length) layers.push(clipLayer(node, innerM, kids, w, h));
-  } else await emitChildren(node.children, innerM, layers, o);
+  } else await kidsOf(layers);
   var inner = liveEffects(node, 'INNER_SHADOW'), fp = geomPaths(node.fillGeometry);
   for (var i = 0; i < inner.length && fp.length; i++) layers.push(innerShadowLayer(node, innerM, inner[i], fp, node.name));
   await emitSelf(node, innerM, o, layers, true, 'strokes');
@@ -1338,7 +1579,7 @@ async function maskedLayer(maskNode, content, M, o) {
   if (!rb) return null;
   var innerM = [1, 0, 0, 1, -rb.x, -rb.y];          // nothing outside the mask is visible
   var layers = [];
-  await emitChildren(content, innerM, layers, o);
+  await withClip(maskNode, o, function () { return emitChildren(content, innerM, layers, o); });
   if (!layers.length) return null;
 
   var w = Math.max(1, Math.ceil(rb.width)), h = Math.max(1, Math.ceil(rb.height));

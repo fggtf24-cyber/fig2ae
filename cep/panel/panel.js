@@ -141,6 +141,7 @@
   document.addEventListener('click', function (e) { if (!$('menu').contains(e.target)) $('menu').classList.remove('open'); });
 
   /* ---------------------------------------------------------- system */
+  $('verTag').textContent = 'v' + S.VERSION;
   function showUpdate(u) {
     u = u || {};
     var t = 'v' + S.VERSION, b = 'Check for updates';

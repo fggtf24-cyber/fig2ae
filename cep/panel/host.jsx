@@ -86,7 +86,13 @@ $.global.F2A_HOST = (function () {
         var lays = selected(c);
         if (!lays.length) return err('Select the layers to precompose');
         app.beginUndoGroup('Fig2AE: Precomp');
-        try {
+        var res;
+        try { res = precompSel(c, lays); } catch (e) { res = err('Precomp failed: ' + (e && e.message || e)); }
+        app.endUndoGroup();
+        return res;
+    }
+    function precompSel(c, lays) {
+        {
             var b = boundsOf(c, lays);
             var idx = [];
             for (var i = 0; i < lays.length; i++) idx.push(lays[i].index);
@@ -108,8 +114,7 @@ $.global.F2A_HOST = (function () {
             }
             if (pl) { for (var s = 1; s <= c.numLayers; s++) c.layer(s).selected = false; pl.selected = true; }
             return ok('Precomp "' + nc.name + '" — ' + nc.width + '×' + nc.height);
-        } catch (e) { return err('Precomp failed: ' + e); }
-        finally { app.endUndoGroup(); }
+        }
     }
 
     /** Un-Precomp: the layers of a selected precomp go back into this comp, where they were */
@@ -119,13 +124,38 @@ $.global.F2A_HOST = (function () {
         var sel = selected(c), pre = [];
         for (var i = 0; i < sel.length; i++) if (sel[i].source instanceof CompItem) pre.push(sel[i]);
         if (!pre.length) return err('Select a precomp layer');
-        var notes = [], moved = 0;
+        var notes = [], moved = 0, res;
         app.beginUndoGroup('Fig2AE: Un-Precomp');
+        // no "return" inside catch/finally: ExtendScript then throws "Object of type Error found where…"
         try {
             for (var p = 0; p < pre.length; p++) moved += unprecompOne(c, pre[p], notes);
-        } catch (e) { return err('Un-Precomp failed: ' + e); }
-        finally { app.endUndoGroup(); }
-        return ok(moved + ' layer(s) moved out' + (notes.length ? ' · ' + notes.join(' · ') : ''));
+            res = ok(moved + ' layer(s) moved out' + (notes.length ? ' · ' + notes.join(' · ') : ''));
+        } catch (e) { res = err('Un-Precomp failed: ' + (e && e.message || e)); }
+        app.endUndoGroup();
+        return res;
+    }
+
+    /**
+     * AE (26.2, tested) refuses copyToComp of a layer that has a parent or a linked expression
+     * while an undo group is open. The parent is taken off for the copy without moving anything
+     * (setParentWithJump keeps the local values) and put back right after; when AE still refuses
+     * (expressions), the undo group is closed for that one copy.
+     */
+    function copyLayer(o, c) {
+        var par = o.parent, lk = o.locked, n0 = c.numLayers;
+        if (lk) o.locked = false;
+        try {
+            if (par) o.setParentWithJump(null);
+            try { o.copyToComp(c); }
+            catch (e) {
+                if (c.numLayers !== n0) throw e;
+                app.endUndoGroup();
+                try { o.copyToComp(c); } finally { app.beginUndoGroup('Fig2AE: Un-Precomp'); }
+            }
+        } finally {
+            if (par) o.setParentWithJump(par);
+            if (lk) o.locked = true;
+        }
     }
 
     function unprecompOne(c, P, notes) {
@@ -133,14 +163,20 @@ $.global.F2A_HOST = (function () {
         if (!n) { unlocked(P, function () { P.remove(); }); return 0; }
         // bottom first: every copy lands on top, so the stack keeps its order.
         // The copy is found as the layer that was not there before (Layer.id, AE 22+), else layer 1.
-        for (i = n; i >= 1; i--) {
-            var before = ids(c), n0 = c.numLayers;
-            src.layer(i).copyToComp(c);
-            if (c.numLayers !== n0 + 1) throw new Error('After Effects did not copy "' + src.layer(i).name + '"');
-            copies[i] = c.layer(1);
-            if (layerKey(c.layer(1)) !== null) {
-                for (var q = 1; q <= c.numLayers; q++) if (!before[layerKey(c.layer(q))]) { copies[i] = c.layer(q); break; }
+        try {
+            for (i = n; i >= 1; i--) {
+                var before = ids(c), n0 = c.numLayers;
+                copyLayer(src.layer(i), c);
+                if (c.numLayers !== n0 + 1) throw new Error('After Effects did not copy "' + src.layer(i).name + '"');
+                copies[i] = c.layer(1);
+                if (layerKey(c.layer(1)) !== null) {
+                    for (var q = 1; q <= c.numLayers; q++) if (!before[layerKey(c.layer(q))]) { copies[i] = c.layer(q); break; }
+                }
             }
+        } catch (e) {
+            // half a precomp in the comp is worse than none: take the copies out again
+            for (i = 1; i <= n; i++) if (copies[i]) try { copies[i].locked = false; copies[i].remove(); } catch (e2) {}
+            throw e;
         }
         for (i = 1; i <= n; i++) {
             var cp = copies[i];

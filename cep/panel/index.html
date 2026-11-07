@@ -24,6 +24,7 @@
 
   .seg { position: relative; display: flex; justify-content: center; padding: 10px 10px 12px; }
   .seg #menuBtn { position: absolute; left: 8px; top: 12px; }
+  .seg #verTag { position: absolute; right: 10px; top: 17px; font-size: 10.5px; color: var(--dim); cursor: default; }
   .seg > div { display: inline-flex; background: var(--row); border-radius: 4px; padding: 0; overflow: hidden; }
   .seg button { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 13px; border: 0; background: transparent;
     color: var(--muted); font: inherit; cursor: pointer; }
@@ -94,7 +95,7 @@
     <div>
     <button id="tNew"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New Comp</button>
     <button id="tCur"><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>Current</button>
-  </div></div>
+  </div><span id="verTag" title="Fig2AE version in After Effects"></span></div>
 
   <section id="sOptions">
     <div class="sec-h">Options<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>

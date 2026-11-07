@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.6';
+var VERSION = '0.4.10';
 var updater = require(path.join(__dirname, 'updater.js'));
 
 var PORT = 7251;
@@ -80,7 +80,28 @@ function importCode(file, opts) {
 function parseResult(out) {
   var p = String(out).split('\t');
   if (p[0] !== 'OK') return { ok: false, error: p.slice(1).join(' ') || String(out) };
-  return { ok: !!p[1], comp: p[1], secs: parseFloat(p[2]) || 0, log: (p[3] || '').split('\u0001').filter(Boolean), mode: p[4] || 'new' };
+  var r = { ok: !!p[1], comp: p[1], secs: parseFloat(p[2]) || 0, log: (p[3] || '').split('\u0001').filter(Boolean), mode: p[4] || 'new' };
+  if (r.mode === 'cancelled') { r.ok = false; r.cancelled = true; r.error = 'Import cancelled — everything it added was removed'; }
+  return r;
+}
+
+/**
+ * Stop / Cancel of a running import: the importer (Fig2AE.jsx) looks for <settings dir>/cancel.txt
+ * after every layer. "stop" keeps what is built, "cancel" removes it.
+ */
+function requestCancel(how) {
+  fs.mkdirSync(settingsDir(), { recursive: true });
+  fs.writeFileSync(path.join(settingsDir(), 'cancel.txt'), how === 'cancel' ? 'cancel' : 'stop');
+}
+
+/** the progress window over AE (progress.ps1, Windows): AE's own windows take no clicks while it imports */
+function progressWindow(compName) {
+  if (process.platform !== 'win32') return null;
+  try {
+    return require('child_process').spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+      '-File', path.join(__dirname, 'progress.ps1'), '-Dir', settingsDir(), '-Name64', Buffer.from(String(compName || ''), 'utf8').toString('base64')],
+      { windowsHide: true, stdio: 'ignore' });
+  } catch (e) { logEvent('error', 'progress window: ' + e.message); return null; }
 }
 
 function stamp() {
@@ -116,17 +137,25 @@ function start(evalHost, opts) {
     fs.mkdirSync(folder, { recursive: true });
     var file = path.join(folder, name);
     fs.writeFileSync(file, jsx, 'utf8');
-    for (var waited = 0; ; waited += retryMs) {
-      var out = await evalHost(importCode(file, { target: set.target, parametric: set.parametric, precompGroups: set.precompGroups }));
-      if (out !== BUSY) {
-        var r = parseResult(out); r.file = file; lastResult(r, doc);
-        logEvent(r.ok ? 'import' : 'error', r.ok ? 'imported "' + r.comp + '" (' + r.mode + ', ' + r.secs.toFixed(1) + ' s)' : 'import failed: ' + r.error,
-                 { settings: set, aeLog: r.log, figmaWarnings: doc.warnings || [], file: file, raw: r.ok ? undefined : String(out).slice(0, 2000) });
-        return r;
+    var win = opts.dir ? null : progressWindow(doc.comp.name);
+    try {
+      for (var waited = 0; ; waited += retryMs) {
+        var out = await evalHost(importCode(file, { target: set.target, parametric: set.parametric, precompGroups: set.precompGroups }));
+        if (out !== BUSY) {
+          var r = parseResult(out); r.file = file; lastResult(r, doc);
+          logEvent(r.ok ? 'import' : (r.cancelled ? 'import' : 'error'),
+                   r.ok ? 'imported "' + r.comp + '" (' + r.mode + ', ' + r.secs.toFixed(1) + ' s)' : (r.cancelled ? 'import cancelled by the user' : 'import failed: ' + r.error),
+                   { settings: set, aeLog: r.log, figmaWarnings: doc.warnings || [], file: file, raw: r.ok || r.cancelled ? undefined : String(out).slice(0, 2000) });
+          return r;
+        }
+        if (waited === 0) logEvent('import', 'After Effects is busy (dialog open?) — waiting');
+        if (waited >= waitMs) { logEvent('error', 'gave up waiting for After Effects'); return { ok: false, error: 'After Effects is busy (a dialog is open?) — import not done', file: file }; }
+        await sleep(retryMs);
       }
-      if (waited === 0) logEvent('import', 'After Effects is busy (dialog open?) — waiting');
-      if (waited >= waitMs) { logEvent('error', 'gave up waiting for After Effects'); return { ok: false, error: 'After Effects is busy (a dialog is open?) — import not done', file: file }; }
-      await sleep(retryMs);
+    } finally {
+      // the window closes itself when progress.json says the import is over; this is the safety net
+      if (win) setTimeout(function () { try { win.kill(); } catch (e) {} }, 1500);
+      try { fs.unlinkSync(path.join(settingsDir(), 'cancel.txt')); } catch (e) {}
     }
   }
 
@@ -171,6 +200,14 @@ function start(evalHost, opts) {
       return;
     }
     if (req.method !== 'POST') { send(res, 405, { ok: false, error: 'POST only' }); return; }
+    if (/^\/cancel\b/.test(req.url)) {                                // Stop / Cancel from the Figma plugin
+      if (!busy) { send(res, 200, { ok: false, error: 'no import is running' }); return; }
+      var how = /[?&]how=cancel\b/.test(req.url) ? 'cancel' : 'stop';
+      if (!opts.dir) try { requestCancel(how); } catch (e) { send(res, 500, { ok: false, error: String(e.message) }); return; }
+      logEvent('import', how + ' requested from Figma');
+      send(res, 200, { ok: true, how: how });
+      return;
+    }
     var chunks = [];
     req.on('data', function (c) { chunks.push(c); });
     req.on('end', function () {
@@ -233,4 +270,5 @@ function start(evalHost, opts) {
 }
 
 module.exports = { start: start, logEvent: logEvent, importCode: importCode, parseResult: parseResult, readSettings: readSettings, writeSettings: writeSettings,
+                   requestCancel: requestCancel,
                    settingsDir: settingsDir, DEFAULTS: DEFAULTS, PORT: PORT, BUSY: BUSY, VERSION: VERSION };
