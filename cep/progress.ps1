@@ -71,6 +71,70 @@ function Send-Cancel($how, $msg) {
 $stop.Add_Click({ Send-Cancel 'stop' 'Stopping after the current layer…' })
 $cancel.Add_Click({ Send-Cancel 'cancel' 'Cancelling — removing what was built…' })
 
+# After the import: the fonts AE did not find, even by a similar name ("Family Style<TAB>stand-in").
+# The window stays open with the list until it is closed.
+$fontsShown = $false
+function Show-MissingFonts($items, $renamed) {
+    $script:fontsShown = $true
+    $stop.Visible = $false; $cancel.Visible = $false; $track.Visible = $false
+    $f.TopMost = $false
+    $n = $items.Count; $r = $renamed.Count
+    $orange = [Drawing.Color]::FromArgb(229, 177, 102); $green = [Drawing.Color]::FromArgb(110, 196, 150)
+    if ($n -gt 0) {
+        $title.Text = $(if ($n -eq 1) { '1 font is not installed' } else { "$n fonts are not installed" })
+        $title.ForeColor = $orange
+        $info.Text = 'After Effects used a stand-in. Install them, then press "Re-check missing fonts" in the Fig2AE panel.'
+    } else {
+        $title.Text = $(if ($r -eq 1) { '1 font was found under a similar name' } else { "$r fonts were found under a similar name" })
+        $title.ForeColor = $green
+        $info.Text = 'Figma calls them a little differently than this computer does. Check that the right font was picked.'
+    }
+    $info.ForeColor = $muted
+    $info.SetBounds(14, 34, 352, 34); $info.AutoEllipsis = $false
+    $list = New-Object Windows.Forms.Panel
+    $list.BackColor = [Drawing.Color]::FromArgb(43, 43, 43); $list.AutoScroll = $true
+    $rowH = 24
+    $rows = $n + $r + $(if ($n -gt 0 -and $r -gt 0) { 2 } else { 0 })
+    $h = [Math]::Min(9, $rows) * $rowH + 8
+    $list.SetBounds(14, 72, 352, $h)
+    $y = 4; $names = @()
+    function Add-Head($t, $c) {
+        $l = New-Object Windows.Forms.Label
+        $l.Text = $t; $l.ForeColor = $c; $l.SetBounds(10, $script:y, 330, 20)
+        $l.Font = New-Object Drawing.Font('Segoe UI', 8.25)
+        $list.Controls.Add($l); $script:y += $rowH
+    }
+    function Add-Row($it, $arrow) {
+        $parts = ([string]$it).Split("`t")
+        $script:names += $parts[0]
+        $a = New-Object Windows.Forms.Label
+        $a.Text = $parts[0]; $a.ForeColor = $text; $a.AutoEllipsis = $true
+        $a.Font = New-Object Drawing.Font('Segoe UI Semibold', 9)
+        $a.SetBounds(10, $script:y, 196, 20)
+        $b = New-Object Windows.Forms.Label
+        $b.Text = $(if ($parts.Count -gt 1 -and $parts[1]) { $arrow + ' ' + $parts[1] } else { '' }); $b.ForeColor = $muted; $b.AutoEllipsis = $true
+        $b.SetBounds(208, $script:y, 132, 20)
+        $list.Controls.Add($a); $list.Controls.Add($b)
+        $script:y += $rowH
+    }
+    $script:y = $y; $script:names = @()
+    if ($n -gt 0 -and $r -gt 0) { Add-Head 'NOT INSTALLED — stand-in used' $orange }
+    foreach ($it in $items) { Add-Row $it '→' }
+    if ($n -gt 0 -and $r -gt 0) { Add-Head 'FOUND UNDER A SIMILAR NAME' $green }
+    foreach ($it in $renamed) { Add-Row $it '=' }
+    $names = $script:names
+    $f.Controls.Add($list)
+    $by = 72 + $h + 12
+    $copy = New-Btn 'Copy names' 14 'Copies the font names, one per line'
+    $close = New-Btn 'Close' 196 ''
+    $copy.Top = $by; $close.Top = $by
+    $copy.Add_Click({ try { [Windows.Forms.Clipboard]::SetText(($names -join "`r`n")); $copy.Text = 'Copied' } catch {} }.GetNewClosure())
+    $close.Add_Click({ $f.Close() })
+    $f.ClientSize = New-Object Drawing.Size(380, ($by + 28 + 14))
+    $f.Text = 'Fig2AE · fonts'
+    $f.Activate()
+}
+
 $seen = $false
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 200
@@ -88,6 +152,9 @@ $timer.Add_Tick({
                 $l = [string]$p.layer
                 $info.Text = "$($p.n) / $($p.total) layers" + $(if ($l) { ' · ' + $l } else { '' })
             }
+        } elseif ($p.state -eq 'done' -and ((($p.missing | Measure-Object).Count -gt 0) -or (($p.renamed | Measure-Object).Count -gt 0))) {
+            # (@($null).Count is 1 in PowerShell 5.1: Measure-Object counts a missing key as 0)
+            if (-not $script:fontsShown) { Show-MissingFonts @($p.missing | Where-Object { $_ }) @($p.renamed | Where-Object { $_ }) }
         } elseif ($script:seen -or $now - $started -gt 5000) { $f.Close() }
     }
     $script:ticks++

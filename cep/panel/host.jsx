@@ -118,17 +118,23 @@ $.global.F2A_HOST = (function () {
     }
 
     /** Un-Precomp: the layers of a selected precomp go back into this comp, where they were */
-    function unprecomp() {
+    /** optsJson: {"trim": true} — the layers keep the in/out of the precomp layer they came from (panel gear) */
+    function unprecomp(optsJson) {
         var c = activeComp();
         if (!c) return err('Open a composition first');
-        var sel = selected(c), pre = [];
+        var sel = selected(c), pre = [], trim = false, pick = true, made = [];
+        try { var uo = optsJson ? eval('(' + optsJson + ')') : {}; trim = !!uo.trim; pick = uo.select !== false; } catch (e0) {}
         for (var i = 0; i < sel.length; i++) if (sel[i].source instanceof CompItem) pre.push(sel[i]);
         if (!pre.length) return err('Select a precomp layer');
         var notes = [], moved = 0, res;
         app.beginUndoGroup('Fig2AE: Un-Precomp');
         // no "return" inside catch/finally: ExtendScript then throws "Object of type Error found where…"
         try {
-            for (var p = 0; p < pre.length; p++) moved += unprecompOne(c, pre[p], notes);
+            for (var p = 0; p < pre.length; p++) moved += unprecompOne(c, pre[p], notes, trim, made);
+            if (pick) {                                             // the unpacked layers end up selected (panel gear)
+                for (var s = 1; s <= c.numLayers; s++) c.layer(s).selected = false;
+                for (var m = 0; m < made.length; m++) try { made[m].selected = true; } catch (eS) {}
+            }
             res = ok(moved + ' layer(s) moved out' + (notes.length ? ' · ' + notes.join(' · ') : ''));
         } catch (e) { res = err('Un-Precomp failed: ' + (e && e.message || e)); }
         app.endUndoGroup();
@@ -158,7 +164,7 @@ $.global.F2A_HOST = (function () {
         }
     }
 
-    function unprecompOne(c, P, notes) {
+    function unprecompOne(c, P, notes, trim, made) {
         var src = P.source, n = src.numLayers, copies = [], i;
         if (!n) { unlocked(P, function () { P.remove(); }); return 0; }
         // bottom first: every copy lands on top, so the stack keeps its order.
@@ -202,12 +208,122 @@ $.global.F2A_HOST = (function () {
         else for (i = 1; i <= n; i++) if (!src.layer(i).parent) copies[i].parent = P.parent;   // keeps them where they are
         if (tr.property('ADBE Opacity').value < 100 || P.property('ADBE Effect Parade').numProperties || P.blendingMode !== BlendingMode.NORMAL)
             notes.push('opacity / effects / blend mode of "' + P.name + '" were not carried over');
+        if (trim) trimTo(copies, n, P, notes);
+        for (i = 1; i <= n; i++) made.push(copies[i]);
         for (i = 1; i <= n; i++) if (src.layer(i).locked) copies[i].locked = true;
         unlocked(P, function () {
             if (anim) { P.enabled = false; P.audioEnabled = false; P.shy = true; }
             else P.remove();
         });
         return n;
+    }
+
+    /**
+     * "Trim to precomp length": each layer starts and ends where the precomp layer did (never longer than
+     * it was). A layer wholly outside that span showed nothing in the precomp — it is left as it was.
+     */
+    function trimTo(copies, n, P, notes) {
+        var pin = P.inPoint, pout = P.outPoint, outside = 0;
+        if (P.stretch !== 100 || P.timeRemapEnabled) notes.push('time stretch / time remap of "' + P.name + '" was not carried over');
+        for (var i = 1; i <= n; i++) {
+            var L = copies[i], a = Math.max(L.inPoint, pin), b = Math.min(L.outPoint, pout);
+            if (b - a <= 0) { outside++; continue; }
+            if (L.locked) L.locked = false;
+            try { L.inPoint = a; L.outPoint = b; } catch (e) { notes.push('could not trim "' + L.name + '": ' + e); }
+        }
+        if (outside) notes.push(outside + ' layer(s) of "' + P.name + '" lie outside its time span — left untrimmed');
+    }
+
+    /* ------------------------------------------------------------ FONTS */
+
+    // text layers Fig2AE set in a stand-in font (ae/Fig2AE.jsx): "fig2ae:fonts=<start>-<end>:<Family>|<Style>;…"
+    var FONT_TAG = 'fig2ae:fonts=';
+    function taggedText() {
+        var out = [];
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var c = app.project.item(i);
+            if (!(c instanceof CompItem)) continue;
+            for (var k = 1; k <= c.numLayers; k++) {
+                var L = c.layer(k);
+                if (L instanceof TextLayer && String(L.comment).indexOf(FONT_TAG) === 0) out.push(L);
+            }
+        }
+        return out;
+    }
+    function parseTag(s) {
+        var parts = String(s).substring(FONT_TAG.length).split(';'), out = [];
+        for (var i = 0; i < parts.length; i++) {
+            var m = /^(\d+)-(\d+):(.*)\|(.*)$/.exec(parts[i]);
+            if (m) out.push({ start: +m[1], end: +m[2], family: m[3], style: m[4] });
+        }
+        return out;
+    }
+
+    /** "Re-check missing fonts", step 1: the fonts the tagged text layers are waiting for, one "Family|Style" per line */
+    function fontScan() {
+        if (!app.project) return err('No project');
+        var lays = taggedText(), seen = {}, list = [];
+        for (var i = 0; i < lays.length; i++) {
+            var t = parseTag(lays[i].comment);
+            for (var k = 0; k < t.length; k++) {
+                var key = t[k].family + '|' + t[k].style;
+                if (!seen[key]) { seen[key] = 1; list.push(key); }
+            }
+        }
+        return ok(lays.length + '\n' + list.join('\n'));
+    }
+
+    /**
+     * Step 2: mapJson {"Family|Style": "PostScriptName"} (matched in node with ae/fontmatch.jsx) — every
+     * tagged range whose font is now installed gets it. The ink edge the paragraph is aligned to stays where
+     * it was, so the text does not jump. Fixed ranges leave the tag; the rest stays for the next check.
+     */
+    function fontApply(mapJson) {
+        var map;
+        try { map = eval('(' + mapJson + ')'); } catch (e) { return err('bad font map'); }
+        var lays = taggedText(), fixed = 0, layersFixed = 0, still = {}, res;
+        app.beginUndoGroup('Fig2AE: re-check fonts');
+        try {
+            for (var i = 0; i < lays.length; i++) {
+                var L = lays[i], tag = parseTag(L.comment), keep = [], any = false;
+                var prop = L.property('ADBE Text Properties').property('ADBE Text Document'), td = prop.value;
+                var r0 = null;
+                try { r0 = L.sourceRectAtTime(L.containingComp.time, false); } catch (e0) {}
+                for (var k = 0; k < tag.length; k++) {
+                    var t = tag[k], ps = map[t.family + '|' + t.style], font = null;
+                    if (ps) try { var fl = app.fonts.getFontsByPostScriptName(ps); font = fl && fl.length ? fl[0] : null; } catch (e1) {}
+                    if (!font) { keep.push(t); still[t.family + ' ' + t.style] = 1; continue; }
+                    var whole = tag.length === 1 || typeof td.characterRange !== 'function';
+                    var target = whole ? td : td.characterRange(t.start, Math.min(t.end, td.text.length));
+                    try { target.fontObject = font; } catch (e2) { target.font = font.postScriptName; }
+                    any = true; fixed++;
+                }
+                if (!any) continue;
+                unlocked(L, function () {
+                    prop.setValue(td);
+                    keepInk(L, r0);
+                    L.comment = keep.length ? FONT_TAG + (function () { var a = []; for (var q = 0; q < keep.length; q++) a.push(keep[q].start + '-' + keep[q].end + ':' + keep[q].family + '|' + keep[q].style); return a.join(';'); })() : '';
+                });
+                layersFixed++;
+            }
+            var miss = [];
+            for (var s in still) miss.push(s);
+            res = ok(layersFixed + ' text layer(s) updated, ' + fixed + ' font run(s) replaced' + (miss.length ? '\n' + miss.join('\n') : ''));
+        } catch (e) { res = err('Re-check failed: ' + (e && e.message || e)); }
+        app.endUndoGroup();
+        return res;
+    }
+
+    /** after a font change: move the anchor so the aligned edge (left / centre / right) and the vertical centre stay put */
+    function keepInk(L, r0) {
+        if (!r0) return;
+        var a = L.property('ADBE Transform Group').property('ADBE Anchor Point');
+        if (a.numKeys > 0 || a.expressionEnabled) return;
+        var r1 = L.sourceRectAtTime(L.containingComp.time, false), td = L.property('ADBE Text Properties').property('ADBE Text Document').value;
+        var k = td.justification === ParagraphJustification.CENTER_JUSTIFY ? 0.5 : td.justification === ParagraphJustification.RIGHT_JUSTIFY ? 1 : 0;
+        var dx = (r1.left + r1.width * k) - (r0.left + r0.width * k), dy = (r1.top + r1.height / 2) - (r0.top + r0.height / 2);
+        var v = a.value;
+        a.setValue(v.length > 2 ? [v[0] + dx, v[1] + dy, v[2]] : [v[0] + dx, v[1] + dy]);
     }
 
     /** Toggle guide layer visibility (the Figma reference frame is a guide layer) */
@@ -295,7 +411,7 @@ $.global.F2A_HOST = (function () {
         return ok('"' + r.comp.name + '" imported in ' + r.secs.toFixed(1) + ' s' + (all.length ? '\n' + all.join('\n') : ''));
     }
 
-    return { precomp: precomp, unprecomp: unprecomp, toggleGuides: toggleGuides, deleteGroups: deleteGroups,
+    return { fontScan: fontScan, fontApply: fontApply, precomp: precomp, unprecomp: unprecomp, toggleGuides: toggleGuides, deleteGroups: deleteGroups,
              saveOpts: saveOpts, pickFolder: pickFolder, openFolder: openFolder, importFile: importFile };
 })();
 'OK\tloaded';

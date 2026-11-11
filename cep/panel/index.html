@@ -58,6 +58,16 @@
   .act:hover { background: var(--row-hi); color: #fff; }
   .act:active { background: var(--row-on); }
   .act svg { color: #bdbdbd; }
+  .act-row { display: flex; gap: 4px; }
+  .act-row .act:first-child { flex: 1; }
+  .act.gear { width: 28px; flex: none; padding: 0; justify-content: center; }
+  .act.gear.on { background: var(--row-on); }
+  .act.gear.on svg { color: #fff; }
+  .act .hint { margin-left: auto; font-size: 10.5px; color: var(--dim); }
+  .drawer { max-height: 0; overflow: hidden; transition: max-height .18s ease; margin: -2px 0 4px; }
+  .drawer.open { max-height: 130px; }
+  .drawer .check { padding: 6px 2px 2px; }
+  .drawer-note { font-size: 10.5px; color: var(--dim); padding: 0 2px 6px 24px; line-height: 1.35; }
 
   .kv { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; color: var(--muted); }
   .kv b { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -116,7 +126,16 @@
     <div class="sec-h">Groups<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
     <div class="sec-b">
       <button class="act" data-host="precomp"><svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>Precomp</button>
-      <button class="act" data-host="unprecomp"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5M4 4l5 5M20 4l-5 5M4 20l5-5M20 20l-5-5"/></svg>Un-Precomp</button>
+      <div class="act-row">
+        <button class="act" id="unpreBtn"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5M4 4l5 5M20 4l-5 5M4 20l5-5M20 20l-5-5"/></svg>Un-Precomp<span class="hint" id="unpreHint"></span></button>
+        <button class="act gear" id="unpreGear" title="Un-Precomp settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+      </div>
+      <div class="drawer" id="unpreDrawer">
+        <div class="check" data-opt="unprecompTrim"><span class="box"></span>Trim layers to the precomp length</div>
+        <div class="drawer-note">On: the layers start and end where the precomp layer did. Off: they keep their own length.</div>
+        <div class="check" data-opt="unprecompSelect"><span class="box"></span>Select the unpacked layers</div>
+      </div>
+      <button class="act" id="fontsBtn" title="Text layers Fig2AE set in a stand-in font get the real font, if it is installed now"><svg viewBox="0 0 24 24"><path d="M4 20l6-16h1l6 16M6.5 14h8"/><path d="M17 4.5a3 3 0 1 1 3 3"/><path d="M20 4.5V7.5h-3"/></svg>Re-check missing fonts</button>
       <button class="act" data-host="toggleGuides"><svg viewBox="0 0 24 24"><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c5 0 9 4.5 10 7a13 13 0 0 1-2.4 3.3M6.6 6.6C4.3 8 2.7 10.2 2 12c1 2.5 5 7 10 7 1.9 0 3.6-.6 5-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>Toggle guide layer visibility</button>
       <button class="act" data-host="deleteGroups"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>Delete group layers</button>
     </div>

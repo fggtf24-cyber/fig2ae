@@ -12,8 +12,9 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.11';
+var VERSION = '0.4.12';
 var updater = require(path.join(__dirname, 'updater.js'));
+var fonts = require(path.join(__dirname, 'fonts.js'));
 
 var PORT = 7251;
 var BUSY = 'EvalScript error.';
@@ -27,7 +28,8 @@ var BUSY = 'EvalScript error.';
  *   groupNulls    a flattened group gets a null that parents its layers
  *   autoUpdate    install new GitHub releases by itself (updater.js)
  */
-var DEFAULTS = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true };
+var DEFAULTS = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true,
+                 unprecompTrim: false, unprecompSelect: true };   // Un-Precomp: layers keep the in/out of the precomp layer (panel gear)
 function settingsDir() {
   return process.platform === 'win32' ? path.join(process.env.APPDATA || os.homedir(), 'Fig2AE')
                                       : path.join(os.homedir(), 'Library', 'Application Support', 'Fig2AE');
@@ -174,7 +176,10 @@ function start(evalHost, opts) {
       }
     } finally {
       // the window closes itself when progress.json says the import is over; this is the safety net
-      if (win) setTimeout(function () { try { win.kill(); } catch (e) {} }, 1500);
+      // (unless it now lists fonts AE did not find: then the user closes it)
+      var keep = false;
+      try { var pj = JSON.parse(fs.readFileSync(path.join(settingsDir(), 'progress.json'), 'utf8')); keep = pj.state === 'done' && ((pj.missing && pj.missing.length > 0) || (pj.renamed && pj.renamed.length > 0)); } catch (e) {}
+      if (win && !keep) setTimeout(function () { try { win.kill(); } catch (e) {} }, 1500);
       try { fs.unlinkSync(path.join(settingsDir(), 'cancel.txt')); } catch (e) {}
     }
   }
@@ -203,6 +208,14 @@ function start(evalHost, opts) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    // a newer Fig2AE server found this one still holding the port (left over from a live update): step aside.
+    // The custom header makes browsers preflight it, and the preflight does not allow it: web pages can't send this.
+    if (req.method === 'POST' && /^\/shutdown\b/.test(req.url) && req.headers['x-fig2ae'] === 'shutdown') {
+      logEvent('update', 'asked to step aside by a newer server');
+      send(res, 200, { ok: true });
+      setTimeout(function () { server.fig2aeStop(function () {}); }, 50);
+      return;
+    }
     if (req.method === 'GET' && /^\/progress\b/.test(req.url)) {     // the importer writes it while building (Fig2AE.jsx)
       var pr = null;
       try { pr = JSON.parse(fs.readFileSync(path.join(settingsDir(), 'progress.json'), 'utf8')); } catch (e) {}
@@ -231,6 +244,7 @@ function start(evalHost, opts) {
     var chunks = [];
     req.on('data', function (c) { chunks.push(c); });
     req.on('end', function () {
+      if (/^\/fonts\/(check|install)\b/.test(req.url)) { fontsRequest(req, res, Buffer.concat(chunks).toString('utf8')); return; }
       var name = safeName(req.url);
       var body = Buffer.concat(chunks).toString('utf8');
       busy++;
@@ -239,19 +253,82 @@ function start(evalHost, opts) {
         .then(function () { busy--; });
     });
   }
+  /**
+   * Fonts the Figma plugin is about to send (cep/fonts.js):
+   *   POST /fonts/check   {fonts:[{family,style}]} -> {ok, missing, renamed}   (AE busy: ok false, busy true)
+   *   POST /fonts/install {fonts:[…]}              -> {ok, installed, unavailable, failed, missing}
+   * Data only, like /import: nothing from the request is run.
+   */
+  async function fontsRequest(req, res, body) {
+    var list;
+    try { list = JSON.parse(body).fonts; } catch (e) { list = null; }
+    if (!Array.isArray(list)) { send(res, 400, { ok: false, error: 'fonts: [{family, style}] expected' }); return; }
+    list = list.filter(function (f) { return f && typeof f.family === 'string' && typeof f.style === 'string'; }).slice(0, 200);
+    if (busy) { send(res, 200, { ok: false, busy: true }); return; }
+    try {
+      if (/^\/fonts\/install/.test(req.url)) {
+        var r = await fonts.install(list, opts.fontsOpts);
+        logEvent('fonts', 'installed ' + r.installed.length + ', not on Google Fonts ' + r.unavailable.length + ', failed ' + r.failed.length, r);
+        var after = await fonts.installed(evalHost);                  // does AE see them now?
+        r.missing = after ? fonts.check(list, after).missing : null;
+        r.ok = true;
+        send(res, 200, r);
+        return;
+      }
+      var have = await fonts.installed(evalHost);
+      if (!have) { send(res, 200, { ok: false, busy: true }); return; }
+      var c = fonts.check(list, have);
+      // missing ones: can they be downloaded? (google: true / false / null = could not ask)
+      if (c.missing.length) {
+        var g = await fonts.onGoogle(c.missing.map(function (f) { return f.family; }).filter(function (v, i, a) { return a.indexOf(v) === i; }), opts.fontsOpts);
+        c.missing.forEach(function (f) { f.google = g[f.family]; });
+      }
+      c.ok = true;
+      send(res, 200, c);
+    } catch (e) { logEvent('error', 'fonts request failed', errInfo(e)); send(res, 500, { ok: false, error: String(e && e.message || e) }); }
+  }
+
   // loopback only; "localhost" may resolve to either address family
-  var server = http.createServer(handle);
-  server.listen(opts.port === undefined ? PORT : opts.port, '127.0.0.1');
+  var sockets = new Set();
+  function track(sv) {
+    sv.on('connection', function (s) { sockets.add(s); s.on('close', function () { sockets.delete(s); }); });
+    return sv;
+  }
+  /**
+   * The port may still be held for a moment by the server this one replaces (live update), or by a
+   * leftover one: ask it to step aside (POST /shutdown) and try again for a few seconds.
+   */
+  function listen(sv, host, tries) {
+    sv.listen(opts.port === undefined ? PORT : opts.port, host);
+    if (opts.port !== undefined) return;
+    sv.on('error', function (e) {
+      if (e.code !== 'EADDRINUSE') return;
+      if (tries <= 0) { if (host === '127.0.0.1') logEvent('error', 'port ' + PORT + ' stays busy — restart After Effects'); return; }
+      if (tries === 8 && host === '127.0.0.1') {
+        var q = http.request({ host: '127.0.0.1', port: PORT, method: 'POST', path: '/shutdown', headers: { 'X-Fig2AE': 'shutdown' }, timeout: 2000 });
+        q.on('error', function () {}); q.on('timeout', function () { q.destroy(); }); q.end();
+      }
+      setTimeout(function () { sv.removeAllListeners('error'); sv.on('error', function () {}); listen(sv, host, tries - 1); }, 1000);
+    });
+  }
+  var server = track(http.createServer(handle));
+  listen(server, '127.0.0.1', 8);
   servers.push(server);
   /** stops listening and every timer: the page reloads itself after an update (index.html) */
   server.fig2aeStop = function (done) {
+    // done exactly once: calling it twice reloaded the page twice and left this server listening as a
+    // zombie (its AE bridge dead), so every request hung — seen in 0.4.11
+    var called = false, fallback = null;
+    function finish() { if (called) return; called = true; clearTimeout(fallback); done(); }
     timers.forEach(function (t) { clearTimeout(t); clearInterval(t); });
     var n = servers.length;
-    servers.forEach(function (sv) { try { sv.close(function () { if (--n === 0) done(); }); } catch (e) { if (--n === 0) done(); } });
-    setTimeout(done, 3000);           // close waits for open connections (keep-alive): don't wait forever
+    servers.forEach(function (sv) { try { sv.close(function () { if (--n === 0) finish(); }); } catch (e) { if (--n === 0) finish(); } });
+    // close waits for open connections (keep-alive, a request waiting for AE): end them
+    sockets.forEach(function (s) { try { s.destroy(); } catch (e) {} });
+    fallback = setTimeout(finish, 3000);
   };
   if (opts.port === undefined) {
-    servers.push(http.createServer(handle).on('error', function () {}).listen(PORT, '::1'));
+    var six = track(http.createServer(handle)); six.on('error', function () {}); listen(six, '::1', 8); servers.push(six);
     // auto-update: shortly after AE starts, then every 6 hours
     var auto = function () {
       if (readSettings(settingsFile).autoUpdate) updater.check(VERSION).then(function (u) {

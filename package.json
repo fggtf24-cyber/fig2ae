@@ -1,10 +1,10 @@
 {
   "name": "fig2ae",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "private": true,
   "description": "Figma -> After Effects перенос без кривизны",
   "scripts": {
-    "test": "node test/geom.test.js && node test/figma.test.js && node test/server.test.js && node test/update.test.js",
+    "test": "node test/geom.test.js && node test/figma.test.js && node test/server.test.js && node test/fonts.test.js && node test/update.test.js",
     "check:ae": "node test/ae/check.js"
   }
 }

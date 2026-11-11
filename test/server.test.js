@@ -59,11 +59,11 @@ server.on('listening', function () {
         assert.strictEqual(srv.safeName('/import?name=fig2ae_%60id%60.jsx'), 'fig2ae__id_.jsx');
         assert.strictEqual(srv.safeName('/import?name=%E0%A4%A'), 'fig2ae_comp.jsx', 'битый %-код не роняет сервер');
         assert.strictEqual(srv.safeName('/import?name=fig2ae_%D0%9A%D0%B0%D1%80%D1%82%D0%B0.jsx'), 'fig2ae_Карта.jsx');
-        rejectCode(port, function () { noCancel(port, function () { noAccess(function () {
+        rejectCode(port, function () { noCancel(port, function () { noAccess(function () { stopOnce(function () {
           console.log('server: all checks passed');
           server.close();
           fs.rmSync(dir, { recursive: true, force: true });
-        }); }); });
+        }); }); }); });
         return;
       } catch (e) { console.error(e); process.exitCode = 1; }
       server.close();
@@ -95,6 +95,29 @@ function noAccess(done) {
       });
     });
     req.end(JSON.stringify({ app: 'fig2ae', v: 3, comp: { name: 'c', w: 4, h: 4, layers: [] }, warnings: [] }));
+  });
+}
+
+// live update: stop() must call back ONCE (twice = the page reloads twice, a zombie keeps the port)
+// and must not wait for a request that hangs on After Effects
+function stopOnce(done) {
+  var s2 = srv.start(function () { return new Promise(function () {}); }, { port: 0, dir: dir, retryMs: 10 });
+  s2.on('listening', function () {
+    var p2 = s2.address().port;
+    var hang = http.request({ host: '127.0.0.1', port: p2, method: 'POST', path: '/fonts/check' });
+    hang.on('error', function () {});
+    hang.end(JSON.stringify({ fonts: [{ family: 'Inter', style: 'Regular' }] }));
+    setTimeout(function () {
+      var calls = 0, t0 = Date.now();
+      s2.fig2aeStop(function () { calls++; });
+      setTimeout(function () {
+        try {
+          assert.strictEqual(calls, 1, 'stop вызывает done ровно один раз');
+          assert.strictEqual(s2.listening, false, 'порт освобождён');
+        } catch (e) { console.error(e); process.exitCode = 1; }
+        done();
+      }, 3300);
+    }, 200);
   });
 }
 

@@ -110,6 +110,13 @@ figma.ui.onmessage = async function (msg) {
     postSelection();
     return;
   }
+  if (msg.type === 'fonts') {
+    // the fonts of the selection, so the UI can ask AE which of them it lacks before exporting
+    var list = [];
+    try { list = fontsOf(figma.currentPage.selection, msg.hidden); } catch (e) {}
+    figma.ui.postMessage({ type: 'fonts', fonts: list });
+    return;
+  }
   if (msg.type !== 'export') return;
   W = [];
   var diag = diagnostics(), t0 = Date.now();
@@ -140,6 +147,29 @@ function diagnostics() {
   try { d.p3 = figma.root.documentColorProfile; } catch (e) {}
   return d;
 }
+/** every family + style the text of these nodes uses (hidden ones only when they are exported too) */
+function fontsOf(nodes, withHidden) {
+  var seen = {}, out = [];
+  function add(f) {
+    if (!f || f === figma.mixed) return;
+    var k = f.family + '|' + f.style;
+    if (!seen[k]) { seen[k] = 1; out.push({ family: f.family, style: f.style }); }
+  }
+  function walk(n) {
+    if (!withHidden && n.visible === false) return;
+    if (n.type === 'TEXT') {
+      if (n.fontName !== figma.mixed) add(n.fontName);
+      else {
+        var segs = n.getStyledTextSegments(['fontName']);
+        for (var i = 0; i < segs.length; i++) add(segs[i].fontName);
+      }
+    }
+    if ('children' in n) for (var c = 0; c < n.children.length; c++) walk(n.children[c]);
+  }
+  for (var i = 0; i < nodes.length; i++) walk(nodes[i]);
+  return out;
+}
+
 function countNodes(n) { var c = 1; if ('children' in n) for (var i = 0; i < n.children.length; i++) c += countNodes(n.children[i]); return c; }
 function countLayers(ls) { var c = 0; for (var i = 0; i < ls.length; i++) { c++; if (ls[i].matte) c++; if (ls[i].comp) c += countLayers(ls[i].comp.layers); } return c; }
 
@@ -156,7 +186,7 @@ async function buildDoc(o) {
   var sel = figma.currentPage.selection;
   if (!sel.length) throw new Error('Nothing selected. Select a frame or layers.');
 
-  CLIPS = []; culled = 0; STATS = { live: 0, offset: 0, outline: 0, clipped: 0 };
+  CLIPS = []; BGS = []; culled = 0; STATS = { live: 0, offset: 0, outline: 0, clipped: 0, nullsSkipped: 0, bordersMerged: 0, bgSkipped: 0, emptyPaints: 0, emptyText: 0 };
   var comp, scene = sceneOf(sel);
   if (sel.length === 1 && isContainer(sel[0]) && !scene) {
     var n = sel[0];
@@ -165,7 +195,7 @@ async function buildDoc(o) {
     if (rasterMarked(n)) await pushRaster(n, M, o, layers);
     // whatever lies outside the frame is outside the comp too
     else await withClip(n, o, function () { return containerContent(n, M, o, layers, cw, ch, false); });
-    comp = { name: n.name, w: cw, h: ch, layers: layers };
+    comp = { name: n.name, w: cw, h: ch, layers: layers, bg: solidBg(n) || undefined };
     if (o.reference) await pushReference(n, M, o, layers, '');
   } else if (scene) {
     // part of a frame (one element, a group, several layers): the comp is the whole frame and the
@@ -244,13 +274,13 @@ function sceneOf(sel) {
  */
 var CLIPS = [], culled = 0;
 // how strokes went (diagnostic log): live AE stroke / live on an offset outline / Figma outline / of those, clipped by Figma
-var STATS = { live: 0, offset: 0, outline: 0, clipped: 0 };
+var STATS = { live: 0, offset: 0, outline: 0, clipped: 0, nullsSkipped: 0, bordersMerged: 0, bgSkipped: 0, emptyPaints: 0, emptyText: 0 };
 function rectOf(n) {
   var b = n.absoluteRenderBounds || n.absoluteBoundingBox;
   return b ? { x: b.x, y: b.y, x2: b.x + b.width, y2: b.y + b.height } : null;
 }
 async function withClip(node, o, fn) {
-  var r = o.cull ? rectOf(node) : null;
+  var r = rectOf(node);           // tracked always (names use it); only o.cull drops layers
   if (r && node.absoluteBoundingBox && node.type !== 'GROUP' && !node.isMask) {
     // the clip of a frame is its box, not what it renders (shadows draw outside the clip)
     var bb = node.absoluteBoundingBox; r = { x: bb.x, y: bb.y, x2: bb.x + bb.width, y2: bb.y + bb.height };
@@ -302,10 +332,12 @@ async function emitNode(node, M, out, o) {
     warn(node, 'could not be read (' + ((e && e.message) || e) + ') — baked to PNG');
     await pushRaster(node, M, o, out);
   }
+  if (out.length > n0) bgDrawn(node);
 }
 
 async function emitNodeExact(node, M, out, o) {
   if (!visible(node) && !o.hidden) return;
+  if (node.type === 'TEXT' && !/\S/.test(String(node.characters || ''))) { STATS.emptyText++; return; }   // no characters: nothing to show
   if (node.type === 'SLICE' || node.type === 'STICKY' || node.type === 'CONNECTOR' || node.type === 'WIDGET') return;
   if (rasterMarked(node)) { bgBlur(node, M, out); return pushRaster(node, M, o, out); }   // the user asked for pixels
   warnUnsupportedEffects(node);
@@ -317,22 +349,34 @@ async function emitNodeExact(node, M, out, o) {
   }
 
   if (isContainer(node)) {
-    var grouped = node.clipsContent === true || node.opacity < 1 || realBlend(node.blendMode) ||
+    var shown = shownKids(node, o);
+    var grouped = (node.clipsContent === true && clipCuts(node, shown)) || node.opacity < 1 || realBlend(node.blendMode) ||
                   groupEffects(node) || hasEffect(node, 'INNER_SHADOW') ||
-                  (o.precompGroups && node.children && node.children.length > 0);   // AEUX "Precomp groups"
+                  // AEUX "Precomp groups" — but not for a wrapper around one thing: a comp with one layer in it
+                  (o.precompGroups && shown.length > 0 && !(shown.length === 1 && !ownLook(node)));
     if (grouped) {
       var p = await precompLayer(node, M, o);
       if (p) { bgBlur(node, M, out); out.push(p); }
       return;
     }
     // flattened group: its layers stay in this comp, parented to a null named after the group (like AEUX)
-    var start = out.length, gid = o.groupNulls === false ? null : pushGroupNull(node, M, out);
-    await emitSelf(node, M, o, out, false, 'fills');
-    await emitChildren(node.children, M, out, o);
+    var start = out.length, gid = o.groupNulls === false ? null : pushGroupNull(node, M, out, o);
+    var fillsAt = out.length;
+    var bgSkip = await emitSelf(node, M, o, out, false, 'fills');
+    var fillsEnd = out.length;
+    var bgIn = bgEnter(node, bgSkip === true);
+    try { await emitChildren(node.children, M, out, o); } finally { if (bgIn) BGS.pop(); }
+    var strokesAt = out.length;
     await emitSelf(node, M, o, out, true, 'strokes');
+    mergeBorder(node, out, fillsAt, fillsEnd, strokesAt);
     if (!visible(node)) for (var h = start; h < out.length; h++) out[h].hidden = true;
     if (gid) {
-      if (out.length === start + 1) out.length = start;          // nothing inside: no null either
+      // A null only where it groups something: with one direct layer (a wrapper frame around one thing,
+      // a text in its own auto-layout box) it would be a link in a chain of nulls, each holding one layer.
+      // That layer stays untagged, so the next group up takes it.
+      var direct = 0;
+      for (var g0 = start + 1; g0 < out.length; g0++) if (!out[g0].group) direct++;
+      if (direct <= 1) { out.splice(start, 1); STATS.nullsSkipped++; }
       else for (var g = start + 1; g < out.length; g++) tagGroup(out[g], gid);
     }
     return;
@@ -347,15 +391,211 @@ async function emitNodeExact(node, M, out, o) {
 
 var groupSeq = 0;
 /** a null for a flattened Figma group; its layers get parented to it in AE */
-function pushGroupNull(node, M, out) {
+function pushGroupNull(node, M, out, o) {
   var w = node.width || 1, h = node.height || 1;
   var x = xform(node, mul(M, m32(node.absoluteTransform)), w, h);
   var gid = 'g' + (++groupSeq);
-  out.push({ type: 'null', gid: gid, name: node.name, anchor: [50, 50], pos: x.pos, rot: x.rot,
+  out.push({ type: 'null', gid: gid, name: groupName(node, o), anchor: [50, 50], pos: x.pos, rot: x.rot,
              scale: [x.scale[0] < 0 ? -100 : 100, x.scale[1] < 0 ? -100 : 100],
              opacity: 100, blend: 'NORMAL', effects: [], hidden: !visible(node), locked: false });
   return gid;
 }
+/**
+ * Captured web pages and auto layout give hundreds of groups called "Container", "Text", "Frame 12".
+ * Such a null gets the first text inside it: "Button · RPM Edge CY15", "Container · BTC".
+ */
+var GENERIC_NAME = /^(container|frame|group|div|span|section|wrapper|content|main content|inner|outer|box|stack|row|column|col|item|list|paragraph|text|image|img|vector|rectangle|rect|ellipse|layer|button|link|label|cell|header|footer|body|card|badge|icon|auto layout|instance|component|nav|menu|block|panel|table|table cell|header cell)\b[\s\d:._#()\-a-z]*$/i;
+function groupName(node, o) {
+  var name = String(node.name || '');
+  if (!GENERIC_NAME.test(name)) return name;
+  var t = titleText(node, o);
+  return t ? name + ' · ' + t : name;
+}
+/**
+ * The group's title: its largest text that can be seen (the button's label, not the "1S" badge in it;
+ * nothing that lies outside the frame). Ties: the first one.
+ */
+function titleText(node, o) {
+  var best = null, bestSize = -1, budget = 400;
+  (function walk(n, depth) {
+    if (budget-- <= 0 || depth > 10 || n.visible === false || n.opacity === 0) return;
+    if (o && CLIPS.length && offFrameAlways(n)) return;
+    if (n.type === 'TEXT') {
+      var s = String(n.characters || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+      var size = n.fontSize === figma.mixed ? 0 : (n.fontSize || 0);
+      if (s && size > bestSize) { best = s; bestSize = size; }
+      return;
+    }
+    if ('children' in n) for (var i = 0; i < n.children.length; i++) walk(n.children[i], depth + 1);
+  })(node, 0);
+  if (!best) return '';
+  return best.length > 28 ? best.slice(0, 27) + '…' : best;
+}
+/* ------------------------------------------------- wrappers and clips */
+
+/** children that will show: visible, not empty text, not left out by "Skip invisible layers" */
+function shownKids(node, o) {
+  var out = [], k = node.children || [];
+  for (var i = 0; i < k.length; i++) {
+    var c = k[i];
+    if (!visible(c) && !o.hidden) continue;
+    if (c.type === 'TEXT' && !/\S/.test(String(c.characters || ''))) continue;
+    if (o.cull && CLIPS.length && offFrame(c, o)) continue;
+    out.push(c);
+  }
+  return out;
+}
+/** the frame draws something of its own: a fill or border that shows, or an effect */
+function ownLook(node) {
+  function any(list) {
+    if (!list || list === figma.mixed) return !!list;
+    for (var i = 0; i < list.length; i++) if (list[i].visible !== false && paintAlpha(list[i]) > 0) return true;
+    return false;
+  }
+  // a fill that only repeats the background behind it is left out (redundantBg): not a look of its own
+  return (any(node.fills) && !redundantBg(node)) || (any(node.strokes) && (node.strokeWeight === figma.mixed || node.strokeWeight > 0)) || liveEffects(node).length > 0;
+}
+/**
+ * Clip content matters only when something reaches outside the frame (or into its rounded corners).
+ * Captured web pages set overflow:hidden on nearly every box with everything inside: such a clip
+ * cuts nothing and needs no precomp.
+ */
+function clipCuts(node, kids) {
+  var b = boxRect(node);
+  if (!b) return true;
+  var rad = radiusOf(node), e = 0.5;
+  for (var i = 0; i < kids.length; i++) {
+    var r0 = kids[i].absoluteRenderBounds || kids[i].absoluteBoundingBox;
+    if (!r0) continue;
+    var r = { x: r0.x, y: r0.y, x2: r0.x + r0.width, y2: r0.y + r0.height };
+    if (r.x < b.x - e || r.y < b.y - e || r.x2 > b.x2 + e || r.y2 > b.y2 + e) return true;
+    if (rad > 0) {
+      var nearX = r.x < b.x + rad || r.x2 > b.x2 - rad, nearY = r.y < b.y + rad || r.y2 > b.y2 - rad;
+      if (nearX && nearY) return true;
+    }
+  }
+  return false;
+}
+
+/* ------------------------------------------------- repeated backgrounds */
+
+/**
+ * Nested frames often repeat the background of the frame they sit in (a card in a card in a page, all
+ * #262626): every one became its own full-size layer. BGS knows, for the frame being emitted, which
+ * opaque colour is already behind it, where (absolute rect, corner radius) and what has been drawn over
+ * it since (drawn rects). A frame whose own fill is that same colour, lies wholly on it and has nothing
+ * drawn in between adds no pixel: its fill layer is left out.
+ *   entry: { color: [r,g,b] | null (unknown / not solid), rect, radius, origin: the entry that drew it, drawn: [] }
+ */
+var BGS = [];
+function solidBg(node) {
+  var f = node.fills;
+  if (!f || f === figma.mixed || !isContainer(node)) return null;
+  var vis = [];
+  for (var i = 0; i < f.length; i++) if (f[i].visible !== false && paintAlpha(f[i]) > 0) vis.push(f[i]);
+  if (vis.length !== 1 || vis[0].type !== 'SOLID') return null;
+  if ((vis[0].opacity === undefined ? 1 : vis[0].opacity) < 0.999 || (vis[0].blendMode && vis[0].blendMode !== 'NORMAL')) return null;
+  return col(vis[0].color);
+}
+function boxRect(node) {
+  var b = node.absoluteBoundingBox;
+  return b ? { x: b.x, y: b.y, x2: b.x + b.width, y2: b.y + b.height } : null;
+}
+function cut(a, b) { return !a ? null : !b ? a : { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y), x2: Math.min(a.x2, b.x2), y2: Math.min(a.y2, b.y2) }; }
+function radiusOf(node) {
+  var r = node.cornerRadius;
+  if (r === figma.mixed) r = Math.max(node.topLeftRadius || 0, node.topRightRadius || 0, node.bottomRightRadius || 0, node.bottomLeftRadius || 0);
+  return r || 0;
+}
+/** the part of the node that can show at all: its box cut by the clipping frames around it */
+function visRect(node) {
+  var r = cut(boxRect(node), CLIPS[CLIPS.length - 1]);
+  return r && r.x2 > r.x && r.y2 > r.y ? r : null;
+}
+function redundantBg(node) {
+  var c = solidBg(node), top = BGS[BGS.length - 1];
+  if (!c || !top || !top.color || liveEffects(node).length) return false;
+  if (!sameColor(c, top.color)) return false;
+  var r = visRect(node), e = 0.5;
+  if (!r) return false;
+  var t = top.rect;
+  if (r.x < t.x - e || r.y < t.y - e || r.x2 > t.x2 + e || r.y2 > t.y2 + e) return false;
+  if (top.radius > 0) {             // a square corner over the rounded corner below would show
+    var nearX = r.x < t.x + top.radius || r.x2 > t.x2 - top.radius, nearY = r.y < t.y + top.radius || r.y2 > t.y2 - top.radius;
+    if (nearX && nearY) return false;
+  }
+  var d = top.origin.drawn;
+  for (var i = 0; i < d.length; i++) if (d[i].x < r.x2 && d[i].x2 > r.x && d[i].y < r.y2 && d[i].y2 > r.y) return false;
+  return true;
+}
+/** before the children of a frame: what is behind them now */
+function bgEnter(node, skipped) {
+  var top = BGS[BGS.length - 1], entry = null;
+  if (skipped) entry = { color: top.color, rect: cut(top.rect, visRect(node)) || top.rect, radius: top.radius, origin: top.origin };
+  else {
+    var c = solidBg(node), f = node.fills, any = false;
+    if (f && f !== figma.mixed) for (var i = 0; i < f.length; i++) if (f[i].visible !== false && paintAlpha(f[i]) > 0) any = true;
+    if (c && !liveEffects(node).length && visRect(node)) { entry = { color: c, rect: visRect(node), radius: radiusOf(node), drawn: [] }; entry.origin = entry; }
+    else if (any) entry = { color: null, rect: null, radius: 0, origin: { drawn: [] } };   // something else is behind: no skipping
+  }
+  if (entry) BGS.push(entry);
+  return !!entry;
+}
+/** a node drew something: it now covers whatever background is under it */
+function bgDrawn(node) {
+  var r = node.absoluteRenderBounds || node.absoluteBoundingBox;
+  if (!r) return;
+  var rr = { x: r.x, y: r.y, x2: r.x + r.width, y2: r.y + r.height };
+  for (var i = 0; i < BGS.length; i++) if (BGS[i].origin === BGS[i]) BGS[i].drawn.push(rr);
+}
+
+/** 0 for a paint that draws nothing: 0% opacity, or a gradient whose stops are all transparent */
+function paintAlpha(p) {
+  var a = p.opacity === undefined ? 1 : p.opacity;
+  if (p.type && p.type.indexOf('GRADIENT_') === 0 && p.gradientStops) {
+    var m = 0;
+    for (var i = 0; i < p.gradientStops.length; i++) m = Math.max(m, p.gradientStops[i].color.a === undefined ? 1 : p.gradientStops[i].color.a);
+    a *= m;
+  }
+  return a;
+}
+
+/** like offFrame(), but whether or not "Skip invisible layers" is on: only used for names */
+function offFrameAlways(n) {
+  var c = CLIPS[CLIPS.length - 1], r = rectOf(n);
+  if (!c || !r) return false;
+  return r.x >= c.x2 - 0.01 || r.x2 <= c.x + 0.01 || r.y >= c.y2 - 0.01 || r.y2 <= c.y + 0.01;
+}
+
+/**
+ * A frame's border is its own layer because Figma draws it over the children. When the band lies clear of
+ * every child (the usual pill / card / button: text sits inside the padding), it joins the background
+ * layer as one more shape group: one layer per frame instead of two.
+ */
+function mergeBorder(node, out, fillsAt, fillsEnd, strokesAt) {
+  if (fillsEnd - fillsAt !== 1 || out.length - strokesAt !== 1) return;
+  var bg = out[fillsAt], st = out[strokesAt];
+  if (bg.type !== 'shape' || st.type !== 'shape' || bg.matte || st.matte || bg.fx || st.fx || !bg.groups || !st.groups) return;
+  if ((bg.effects && bg.effects.length) || (st.effects && st.effects.length) || bg.blend !== st.blend || bg.opacity !== st.opacity) return;
+  var sw = node.strokeWeight === figma.mixed
+    ? Math.max(node.strokeTopWeight || 0, node.strokeRightWeight || 0, node.strokeBottomWeight || 0, node.strokeLeftWeight || 0)
+    : (node.strokeWeight || 0);
+  var inset = node.strokeAlign === 'INSIDE' ? sw : node.strokeAlign === 'CENTER' ? sw / 2 : 0;
+  var bb = node.absoluteBoundingBox;
+  if (!bb) return;
+  var ix = bb.x + inset - 0.5, iy = bb.y + inset - 0.5, ix2 = bb.x + bb.width - inset + 0.5, iy2 = bb.y + bb.height - inset + 0.5;
+  var kids = node.children || [];
+  for (var i = 0; i < kids.length; i++) {
+    if (kids[i].visible === false) continue;
+    var r = kids[i].absoluteRenderBounds || kids[i].absoluteBoundingBox;
+    if (!r) continue;
+    if (r.x < ix || r.y < iy || r.x + r.width > ix2 || r.y + r.height > iy2) return;      // a child reaches the border
+  }
+  bg.groups = bg.groups.concat(st.groups);                 // later groups are drawn on top: the border over the fill
+  out.splice(strokesAt, 1);
+  STATS.bordersMerged++;
+}
+
 /** the innermost group wins: layers already tagged by a nested group keep their own null */
 function tagGroup(L, gid) {
   if (!L || L.group) return;
@@ -426,6 +666,7 @@ async function emitLeaf(node, M, o, out) {
  * ('strokes': Figma draws a frame's stroke over its children).
  */
 async function emitSelf(node, M, o, out, noBgBlur, which) {
+  if (which === 'fills' && redundantBg(node)) { STATS.bgSkipped++; return true; }   // same colour already behind it
   var parts = await nodeParts(node, M, o, true, which);
   if (parts === 'RASTER') {
     if (which === 'strokes') return;                  // the fills call baked the whole background, border included
@@ -629,6 +870,7 @@ function paintList(list, w, h, node) {
   var out = [];
   for (var i = 0; i < list.length; i++) {
     if (list[i].visible === false) continue;
+    if (paintAlpha(list[i]) <= 0) { STATS.emptyPaints++; continue; }      // 0%: a layer that draws nothing
     var r = paintRec(list[i], w, h);
     if (r === 'RASTER') {
       warn(node, ({ VIDEO: 'video', PATTERN: 'pattern' }[list[i].type] || list[i].type) + ' — baked to PNG');
@@ -1464,7 +1706,14 @@ async function textParts(node, M, o) {
  * comp padded for an outside border) clips the children by a matte of that outline.
  */
 async function containerContent(node, innerM, o, layers, w, h, padded) {
-  await emitSelf(node, innerM, o, layers, true, 'fills');
+  var bgSkip = await emitSelf(node, innerM, o, layers, true, 'fills');
+  var bgIn = bgEnter(node, bgSkip === true);
+  try { await contentKids(node, innerM, o, layers, w, h, padded); } finally { if (bgIn) BGS.pop(); }
+  var inner = liveEffects(node, 'INNER_SHADOW'), fp = geomPaths(node.fillGeometry);
+  for (var i = 0; i < inner.length && fp.length; i++) layers.push(innerShadowLayer(node, innerM, inner[i], fp, node.name));
+  await emitSelf(node, innerM, o, layers, true, 'strokes');
+}
+async function contentKids(node, innerM, o, layers, w, h, padded) {
   var clips = node.clipsContent === true;
   var kidsOf = function (out) {
     return clips ? withClip(node, o, function () { return emitChildren(node.children, innerM, out, o); })
@@ -1475,9 +1724,6 @@ async function containerContent(node, innerM, o, layers, w, h, padded) {
     await kidsOf(kids);
     if (kids.length) layers.push(clipLayer(node, innerM, kids, w, h));
   } else await kidsOf(layers);
-  var inner = liveEffects(node, 'INNER_SHADOW'), fp = geomPaths(node.fillGeometry);
-  for (var i = 0; i < inner.length && fp.length; i++) layers.push(innerShadowLayer(node, innerM, inner[i], fp, node.name));
-  await emitSelf(node, innerM, o, layers, true, 'strokes');
 }
 
 function plainRect(node) {
@@ -1566,7 +1812,7 @@ async function precompLayer(node, M, o) {
   var L = baseLayer(node, xform(node, lm, w, h));
   L.type = 'precomp';
   L.size = [w, h];
-  L.comp = { name: node.name, w: w, h: h, layers: layers };
+  L.comp = { name: node.name, w: w, h: h, layers: layers, bg: solidBg(node) || undefined };   // the frame colour as the comp's Background Color
   L.effects = effectsOf(node, L, M, false);
   return L;
 }

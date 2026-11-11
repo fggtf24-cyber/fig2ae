@@ -186,8 +186,8 @@ var tri = node({ type: 'RECTANGLE', name: 'tri', x: 200, y: 425, width: 160, hei
   fillGeometry: [{ data: rectPath(160, 40), windingRule: 'NONZERO' }] });
 
 // O: 3x3 clipping frame (AE refuses comps under 4 px)
-var tinyDot = node({ type: 'RECTANGLE', name: 'tinyDot', x: 385, y: 5, width: 3, height: 3,
-  fills: [solid(1, 0, 0)], fillGeometry: [{ data: rectPath(3, 3), windingRule: 'NONZERO' }] });
+var tinyDot = node({ type: 'RECTANGLE', name: 'tinyDot', x: 385, y: 5, width: 6, height: 6,
+  fills: [solid(1, 0, 0)], fillGeometry: [{ data: rectPath(6, 6), windingRule: 'NONZERO' }] });
 var tiny = node({ type: 'FRAME', name: 'tiny', x: 385, y: 5, width: 3, height: 3, clipsContent: true,
   fills: [], fillGeometry: [{ data: rectPath(3, 3), windingRule: 'NONZERO' }], children: [tinyDot] });
 
@@ -495,12 +495,10 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
   // exactly what the plugin UI downloads
   fs.writeFileSync(path.join(out, 'scene.jsx'), build.makeJsx(result.json, build.runtime()));
 
-  // AEUX "Precomp groups" off: a plain group stays flat, its layers are parented to a null named after it
-  var gNull = doc.comp.layers.filter(function (l) { return l.type === 'null' && l.name === 'maskGroup'; })[0];
-  assert.ok(gNull && gNull.gid, 'плоская группа должна дать null');
-  var tagged = doc.comp.layers.filter(function (l) { return l.group === gNull.gid; });
-  assert.ok(tagged.length > 0, 'слои группы привязаны к её null');
-  tagged.forEach(function (l) { if (l.matte && l.type !== 'bgblur') assert.strictEqual(l.matte.layer.group, gNull.gid, 'матт едет вместе со слоем'); });
+  // AEUX "Precomp groups" off: a plain group stays flat. maskGroup ends up as ONE layer (its masked
+  // precomp): a null for one layer is just a link in a chain of nulls -> none
+  assert.ok(!doc.comp.layers.some(function (l) { return l.type === 'null' && l.name === 'maskGroup'; }), 'группа из одного слоя — без null');
+  assert.ok(L['mask · masked'] && !L['mask · masked'].group, 'её единственный слой остаётся без родителя');
   assert.ok(!L.linH.groups[0].param, 'без опции — обычные пути');
 
   var first = doc;
@@ -570,10 +568,30 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
           // an auto-layout parent moves the new vector far away (seen in a real file): the band must still land on the cell
           return { absoluteTransform: [[1, 0, FX + 8230], [0, 1, FY + 35859]], fillGeometry: [{ data: 'M0 0 L200 0 L200 2 L0 2 Z', windingRule: 'NONZERO' }], remove: function () { this.removed = true; } };
         } });
-      var chart = node({ type: 'FRAME', name: 'Chart', x: 0, y: 0, width: 400, height: 400, clipsContent: true, children: [price, dashed, sel, cell],
+      // a pill (auto-layout frame: fill + inside border, two things inside) in a wrapper frame that holds only it
+      var dot1 = node({ type: 'RECTANGLE', name: 'dot1', x: 106, y: 206, width: 8, height: 8, fills: [solid(0, 1, 0)], fillGeometry: [{ data: rectPath(8, 8), windingRule: 'NONZERO' }] });
+      var dot2 = node({ type: 'RECTANGLE', name: 'dot2', x: 120, y: 206, width: 8, height: 8, fills: [solid(0, 1, 0)], fillGeometry: [{ data: rectPath(8, 8), windingRule: 'NONZERO' }] });
+      var pill = node({ type: 'FRAME', name: 'Container', x: 100, y: 200, width: 40, height: 20, clipsContent: false, children: [dot1, dot2],
+        fills: [solid(0.2, 0.2, 0.2)], strokes: [solid(1, 1, 1)], strokeWeight: 1, strokeAlign: 'INSIDE',
+        fillGeometry: [{ data: rectPath(40, 20), windingRule: 'NONZERO' }], strokeGeometry: [{ data: 'M0 -1 L40 -1 L40 1 L0 1 Z', windingRule: 'NONZERO' }] });
+      var wrap = node({ type: 'FRAME', name: 'Container:margin', x: 90, y: 190, width: 60, height: 40, clipsContent: false, children: [pill], fills: [], fillGeometry: [] });
+      dot1.parent = dot2.parent = pill; pill.parent = wrap;
+      // a page frame, a card in it with the SAME grey (adds no pixel), a frame with a 0% fill, an empty text
+      function rect(name, x, y, w, h) { return node({ type: 'RECTANGLE', name: name, x: x, y: y, width: w, height: h, fills: [solid(1, 0, 0)], fillGeometry: [{ data: rectPath(w, h), windingRule: 'NONZERO' }] }); }
+      var r1 = rect('r1', 230, 230, 10, 10), r2 = rect('r2', 250, 230, 10, 10), r3 = rect('r3', 230, 300, 10, 10), r4 = rect('r4', 250, 300, 10, 10);
+      var card = node({ type: 'FRAME', name: 'card', x: 220, y: 220, width: 60, height: 40, clipsContent: false, children: [r1, r2],
+        fills: [solid(0.15, 0.15, 0.15)], fillGeometry: [{ data: rectPath(60, 40), windingRule: 'NONZERO' }] });
+      var ghost = node({ type: 'FRAME', name: 'ghost', x: 220, y: 290, width: 60, height: 30, clipsContent: false, children: [r3, r4],
+        fills: [solid(0, 0, 0, { opacity: 0 })], fillGeometry: [{ data: rectPath(60, 30), windingRule: 'NONZERO' }] });
+      var blank = node({ type: 'TEXT', name: 'blank', x: 230, y: 330, width: 10, height: 10, characters: '   ' });
+      var page = node({ type: 'FRAME', name: 'page', x: 210, y: 210, width: 180, height: 180, clipsContent: false, children: [card, ghost, blank],
+        fills: [solid(0.15, 0.15, 0.15)], fillGeometry: [{ data: rectPath(180, 180), windingRule: 'NONZERO' }] });
+      [r1, r2].forEach(function (c) { c.parent = card; }); [r3, r4].forEach(function (c) { c.parent = ghost; });
+      [card, ghost, blank].forEach(function (c) { c.parent = page; });
+      var chart = node({ type: 'FRAME', name: 'Chart', x: 0, y: 0, width: 400, height: 400, clipsContent: true, children: [price, dashed, sel, cell, wrap, page],
         fills: [], fillGeometry: [{ data: rectPath(400, 400), windingRule: 'NONZERO' }] });
       chart.parent = { type: 'PAGE' };
-      [price, dashed, sel, cell].forEach(function (c) { c.parent = chart; });
+      [price, dashed, sel, cell, wrap, page].forEach(function (c) { c.parent = chart; });
       figma.currentPage.selection = [chart];
       return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false, reference: false } }).then(function () {
         var d5 = JSON.parse(result.json), L5 = {};
@@ -592,7 +610,33 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
         var cl = L5['cell · stroke'] || L5.cell;
         assert.ok(cl, 'обводка ячейки есть: ' + Object.keys(L5));
         assert.strictEqual(cl.groups[0].paths[0].d, 'M 0 18 L 200 18 L 200 20 L 0 20 Z', 'полоса обрезана Figma (outlineStroke), в координатах узла');
-        return d4;
+        // the pill: one null (3 layers in it), border in the background layer, no null for the wrapper around it
+        var nulls = d5.comp.layers.filter(function (l) { return l.type === 'null' && l.name === 'Container'; });
+        assert.strictEqual(nulls.length, 1, 'один null — у плашки, у обёртки нет: ' + d5.comp.layers.filter(function (l) { return l.type === 'null'; }).map(function (l) { return l.name; }));
+        assert.ok(!L5['Container:margin'], 'у обёртки нет null');
+        // repeated background: the page keeps its grey, the card in it (same grey) has no background layer
+        assert.ok(L5['page · background'], 'фон страницы остаётся');
+        assert.ok(!L5['card · background'], 'тот же серый поверх того же серого — без слоя');
+        assert.ok(!L5['ghost · background'], 'заливка 0% — без слоя');
+        assert.ok(L5.r1 && L5.r3, 'содержимое на месте');
+        assert.ok(!d5.comp.layers.some(function (l) { return l.name === 'blank'; }), 'пустой текст — без слоя');
+        assert.ok(!L5['Container · stroke'], 'обводка склеена с фоном');
+        assert.strictEqual(L5['Container · background'].groups.length, 2, 'фон + обводка — один слой');
+        assert.ok(L5.dot1.group === nulls[0].gid && L5.dot2.group === nulls[0].gid && L5['Container · background'].group === nulls[0].gid);
+        // generic names get the first text inside
+        assert.strictEqual(ctx.groupName({ name: 'Container', children: [{ type: 'FRAME', children: [{ type: 'TEXT', characters: '  BTC\n' }] }] }), 'Container · BTC');
+        assert.strictEqual(ctx.groupName({ name: 'Order book', children: [{ type: 'TEXT', characters: 'x' }] }), 'Order book', 'осмысленное имя не трогаем');
+        assert.strictEqual(ctx.groupName({ name: 'Button', children: [{ type: 'TEXT', characters: '1S', fontSize: 10 }, { type: 'TEXT', characters: 'Single-Side v1', fontSize: 18 },
+                                                                     { type: 'TEXT', characters: 'hidden', fontSize: 40, visible: false }] }), 'Button · Single-Side v1', 'самый крупный видимый текст');
+        return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false, reference: false, precompGroups: true } }).then(function () {
+        // "Precomp groups" on: the pill (two things + its own look) is a precomp, the wrapper around it is not
+        var d6 = JSON.parse(result.json), L6 = {};
+        d6.comp.layers.forEach(function (l) { L6[l.name] = l; });
+        assert.ok(!L6['Container:margin'], 'обёртка вокруг одного элемента — не прекомп');
+        assert.ok(L6.Container && L6.Container.type === 'precomp', 'плашка — прекомп');
+        assert.ok(L6.page && L6.page.type === 'precomp' && L6.page.comp.bg, 'у прекомпа страницы её серый — фон композиции');
+          return d4;
+        });
       });
     }).then(function (d4) {
       assert.strictEqual(d4.comp.w, 400); assert.strictEqual(d4.comp.h, 400);

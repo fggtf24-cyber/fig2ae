@@ -49,7 +49,7 @@ fs.writeFileSync(build.CEP_RT, build.cepRuntime());
 
 var stage = fs.mkdtempSync(path.join(os.tmpdir(), 'fig2ae-rel-'));
 function put(rel) { var d = path.join(stage, rel); fs.mkdirSync(path.dirname(d), { recursive: true }); fs.cpSync(path.join(ROOT, rel), d, { recursive: true }); }
-['cep', 'figma-plugin', 'ae/Fig2AE Panel.jsx', 'ae/Fig2AE.jsx', 'ae/geom.jsx',
+['cep', 'figma-plugin', 'ae/Fig2AE Panel.jsx', 'ae/Fig2AE.jsx', 'ae/geom.jsx', 'ae/fontmatch.jsx',
  'Install.cmd', 'install.ps1', 'Uninstall.cmd', 'uninstall.ps1', 'install-mac.sh', 'INSTALL.txt'].forEach(put);
 
 fs.mkdirSync(DIST, { recursive: true });

@@ -3,13 +3,14 @@
  * Normally you never run this file directly: the Figma plugin saves a
  * fig2ae_<name>.jsx that already contains this importer plus the data
  * (built by `node build.js`). Run directly, it asks for a .json export.
- * geom.jsx must sit next to this file.
+ * geom.jsx and fontmatch.jsx must sit next to this file.
  *
  * Tested on AE 26.2. Uses newer APIs when present (fonts API 24.0, per-character
  * text 24.3, box text insets 24.6, setTrackMatte 23.0) and degrades with a
  * warning on older versions.
  */
 #include "geom.jsx"
+#include "fontmatch.jsx"
 
 (function fig2ae() {
 
@@ -105,14 +106,19 @@
         if (!d.exists) d.create();
         return d;
     }
-    function writeProgress(state, name) {
+    /** missing: ["Bebas Neue Regular\tArial Regular", …] — fonts not found even by a similar name; the progress window lists them */
+    function writeProgress(state, name, missing, renamed) {
         if (!PROG) return;
         try {
             var f = new File(dataDir().fsName + '/progress.json');
             f.encoding = 'UTF-8';
             if (!f.open('w')) return;
+            var ms = [];
+            for (var i = 0; missing && i < missing.length; i++) ms.push(jstr(missing[i]));
+            var rs = [];
+            for (var j = 0; renamed && j < renamed.length; j++) rs.push(jstr(renamed[j]));
             f.write('{"state":"' + state + '","n":' + PROG.n + ',"total":' + PROG.total + ',"t":' + new Date().getTime() +
-                    ',"comp":' + jstr(PROG.comp) + ',"layer":' + jstr(name || '') + '}');
+                    ',"comp":' + jstr(PROG.comp) + ',"layer":' + jstr(name || '') + ',"missing":[' + ms.join(',') + '],"renamed":[' + rs.join(',') + ']}');
             f.close();
             PROG.last = new Date().getTime();
         } catch (e) {}
@@ -163,7 +169,7 @@
         try { if (PROG.cf.exists) PROG.cf.remove(); } catch (e) {}      // a click left over from an import that already ended
         writeProgress('running', '');
         LOG = [];
-        missingFonts = {};
+        missingFonts = {}; fontAlias = {}; FONT_LIST = null; fontCache = {};     // fonts may have been installed since the last import
         assets = assetsFolder;
         if (!assets.exists) assets.create();
         if (!app.project) app.newProject();
@@ -171,11 +177,12 @@
         if (toWorking) recolor(doc.comp, toWorking);
 
         var t0 = new Date().getTime(), comp = null, opts = readOpts(doc), mode = 'new', cancelled = null;
-        var target = null, n0 = 0, at = 0;
+        var target = null, n0 = 0, at = 0, anchor = null;
         app.beginUndoGroup('Fig2AE: import from Figma');
         try {
             target = opts.target === 'current' ? activeComp() : null;
             if (opts.target === 'current' && !target) note('"Current" is selected, but no composition is active — a new comp was created');
+            anchor = target ? anchorOf(target) : null;      // read before anything changes the selection
             FOLDERS = sceneFolders(doc.comp.name);
             // While building, the viewer shows an empty 4×4 comp. Otherwise AE redraws the comp (and its timeline)
             // shown in the viewer after every added layer, which makes big frames take minutes.
@@ -189,17 +196,15 @@
                 // precomps get the frame rate and length of the comp they go into
                 doc.fps = target.frameRate; doc.duration = target.duration;
                 n0 = target.numLayers; at = target.time;
+                // a new Figma reference replaces the one from the previous import: remember the old ones now
+                var hasRef = false, oldRefs = [];
+                for (var r = 0; r < doc.comp.layers.length; r++) if (doc.comp.layers[r].guide) hasRef = true;
+                if (hasRef) for (var q = 1; q <= n0; q++) if (target.layer(q).comment === REF_TAG) oldRefs.push(target.layer(q));
                 comp = target;
                 fillComp(target, doc.comp, doc);
                 startAt(target, target.numLayers - n0, at);
-                // a new Figma reference replaces the one from the previous import (the new one is among the top layers)
-                var hasRef = false;
-                for (var r = 0; r < doc.comp.layers.length; r++) if (doc.comp.layers[r].guide) hasRef = true;
-                var firstOld = target.numLayers - n0;
-                if (hasRef) for (var q = target.numLayers; q > firstOld; q--) {
-                    var old = target.layer(q);
-                    if (old.comment === REF_TAG) { old.locked = false; old.remove(); }
-                }
+                placeAbove(target, target.numLayers - n0, anchor);
+                for (var o = 0; o < oldRefs.length; o++) try { oldRefs[o].locked = false; oldRefs[o].remove(); } catch (eR) {}
             } else {
                 doc.comp.name = (doc.comp.name || 'comp') + FOLDERS.suffix;
                 comp = buildComp(doc.comp, doc, true);
@@ -210,7 +215,7 @@
         }
         if (cancelled === 'stop') {
             // keep what is built: the comp being filled when the click came is complete up to that layer
-            if (target) startAt(target, target.numLayers - n0, at);
+            if (target) { startAt(target, target.numLayers - n0, at); placeAbove(target, target.numLayers - n0, anchor); }
             if (!comp) comp = lastBuilt;
             LOG.unshift('Stopped by you at layer ' + PROG.n + ' of ' + PROG.total + ' — what was built so far is kept');
         } else if (cancelled === 'cancel') {
@@ -230,13 +235,18 @@
         closeScratch(cancelled === 'cancel' ? target : comp);
         FOLDERS = null; lastBuilt = null;
         app.endUndoGroup();
+        var renamedList = [];
+        for (var ak in fontAlias) renamedList.push(ak + '\t' + fontAlias[ak]);
+        for (var ak in fontAlias) LOG.push('Font "' + ak + '" is installed under another name — "' + fontAlias[ak] + '" was used');
+        var missingList = [];
         for (var fk in missingFonts) {
+            missingList.push(fk + '\t' + missingFonts[fk].sub);
             var n = 0, names = [];
             for (var ln in missingFonts[fk].layers) { n++; if (names.length < 3) names.push('"' + ln + '"'); }
             LOG.unshift('Font "' + fk + '" is not installed — replaced with "' + missingFonts[fk].sub + '" (' + n + ' layer(s): ' +
                         names.join(', ') + (n > 3 ? '…' : '') + '). Install the font and import again for an exact match.');
         }
-        writeProgress('done', '');
+        writeProgress('done', '', cancelled === 'cancel' ? [] : missingList, cancelled === 'cancel' ? [] : renamedList);
         PROG = null;
         return { comp: comp, mode: mode, log: LOG, secs: (new Date().getTime() - t0) / 1000 };
     }
@@ -259,7 +269,7 @@
         return conv;
     }
 
-    var COLOR_KEYS = { color: 1, c0: 1, c1: 1, solid: 1 };
+    var COLOR_KEYS = { color: 1, c0: 1, c1: 1, solid: 1, bg: 1 };
     function isRGB(v) { return v instanceof Array && v.length === 3 && typeof v[0] === 'number' && typeof v[1] === 'number' && typeof v[2] === 'number'; }
     /** every colour in the export, re-encoded for the project's working space */
     function recolor(o, fn) {
@@ -287,6 +297,8 @@
             compSide(def.w, def.name), compSide(def.h, def.name),
             1, doc.duration || 10, doc.fps || 30);
         try { c.parentFolder = main ? FOLDERS.scene : subFolder('pre', 'Precomps'); } catch (e) {}
+        // the Figma frame colour as Background Color (a repeated background is left out as a layer: see the plugin)
+        if (def.bg && def.bg.length === 3) try { c.bgColor = def.bg; } catch (e2) {}
         if (main) lastBuilt = c;
         return c;
     }
@@ -304,6 +316,40 @@
             nl.startTime = at;
             if (lk) nl.locked = true;
         }
+    }
+
+    /**
+     * "Current" with a layer selected: the import goes right above it instead of on top of the comp.
+     * The top-most selected layer counts. Remembered by Layer.id (AE 22+), else by its index.
+     */
+    function anchorOf(c) {
+        var sel = c.selectedLayers, best = null;
+        for (var i = 0; i < sel.length; i++) if (!best || sel[i].index < best.index) best = sel[i];
+        if (!best || best.index === 1) return null;              // already the top layer: nothing to move
+        return { id: typeof best.id === 'number' ? best.id : null, index: best.index, name: best.name };
+    }
+    function anchorLayer(c, a, k) {
+        if (a.id !== null) {
+            for (var i = 1; i <= c.numLayers; i++) if (c.layer(i).id === a.id) return c.layer(i);
+            return null;
+        }
+        return a.index + k <= c.numLayers ? c.layer(a.index + k) : null;   // the new layers pushed it down by k
+    }
+    /** the k new layers (1..k, top of the stack) move as one block right above the anchor, their order kept */
+    function placeAbove(c, k, a) {
+        if (!a || k <= 0) return;
+        var A = null;
+        try { A = anchorLayer(c, a, k); } catch (e) {}
+        if (!A) { note('The selected layer "' + a.name + '" is gone — the import stays on top of the comp'); return; }
+        try {
+            // the top one goes first: each next one lands between the previous and the anchor
+            for (var t = 0; t < k; t++) {
+                var L = c.layer(1), lk = L.locked;
+                if (lk) L.locked = false;
+                L.moveBefore(A);
+                if (lk) L.locked = true;
+            }
+        } catch (e2) { note('Could not place the import above "' + a.name + '": ' + e2); }
     }
 
     /** builds def.layers into comp c (a new comp, or the active one in "Current" mode) */
@@ -350,6 +396,8 @@
         SCRATCH = null;
     }
     var REF_TAG = 'fig2ae:reference';
+    // text layer set in a stand-in font: "fig2ae:fonts=<start>-<end>:<Family>|<Style>;…" (cep/panel/host.jsx fontApply)
+    var FONT_TAG = 'fig2ae:fonts=';
 
     function activeComp() {
         var a = app.project.activeItem;
@@ -751,9 +799,30 @@
                     }
                 }
             }
+            if (!res && !fuzzyOff) {
+                // the same font under a slightly different name ("Bebas Neue" vs "BebasNeue" / "Bebas Neue Pro", style "Book" for "Regular")
+                var m = F2A_FONTMATCH.match(family, style, fontList());
+                if (m) {
+                    res = m.font.obj;
+                    if (!m.exact) fontAlias[family + ' ' + style] = m.font.family + ' ' + m.font.style;
+                }
+            }
         } catch (e) { res = undefined; }
         fontCache[key] = res;
         return res;
+    }
+
+    /** every installed font once, as {family, style, ps, obj} for F2A_FONTMATCH */
+    var FONT_LIST = null, fontAlias = {}, fuzzyOff = false;
+    function fontList() {
+        if (FONT_LIST) return FONT_LIST;
+        FONT_LIST = [];
+        var all = app.fonts.allFonts;
+        for (var i = 0; i < all.length; i++) for (var j = 0; j < all[i].length; j++) {
+            var f = all[i][j];
+            FONT_LIST.push({ family: f.familyName, style: f.styleName, ps: f.postScriptName, obj: f });
+        }
+        return FONT_LIST;
     }
 
     function setFont(target, seg, font) {
@@ -791,8 +860,10 @@
         var mapped = (bold ? 'Bold' : 'Regular') + (italic ? ' Italic' : '');
         if (mapped === 'Regular Italic') mapped = 'Italic';
         for (var i = 0; i < FALLBACK_FAMILIES.length; i++) {
+            fuzzyOff = true;          // a stand-in must be exactly Arial / Segoe UI…, not "Arial Black"
             var f = findFont(FALLBACK_FAMILIES[i], style) || findFont(FALLBACK_FAMILIES[i], mapped) ||
                     findFont(FALLBACK_FAMILIES[i], 'Regular');
+            fuzzyOff = false;
             if (f) return f;
         }
         return null;                                                     // keep AE's default
@@ -802,7 +873,7 @@
     var ICON_FONT = /icons?\b|symbols|awesome|glyph|ionicons|phosphor|lucide|feather|tabler|remix/i;
 
     function buildText(c, L) {
-        var T = L.text, segs = T.segs, fonts = [], substituted = false, i;
+        var T = L.text, segs = T.segs, fonts = [], substituted = false, standIn = [], i;
         for (i = 0; i < segs.length; i++) {
             fonts[i] = findFont(segs[i].family, segs[i].style);
             if (fonts[i] === null && ICON_FONT.test(segs[i].family) && T.outline && T.outline.length) {
@@ -815,6 +886,8 @@
             if (fonts[i] === null) {
                 fonts[i] = fallbackFont(segs[i].style);
                 substituted = true;
+                // remembered on the layer: the panel's "Re-check missing fonts" puts the real font in later
+                standIn.push(segs[i].start + '-' + segs[i].end + ':' + segs[i].family + '|' + segs[i].style);
                 var key = segs[i].family + ' ' + segs[i].style;
                 var m = missingFonts[key] || (missingFonts[key] = { sub: fonts[i] ? fonts[i].familyName + ' ' + fonts[i].styleName : 'the AE default font', layers: {} });
                 m.layers[L.name] = 1;
@@ -878,6 +951,7 @@
         }
         if (alpha !== null && alpha < 100) L.opacity = L.opacity * alpha / 100;
 
+        if (standIn.length) lay.comment = FONT_TAG + standIn.join(';');
         placeByInk(lay, L, substituted);
         return lay;
     }

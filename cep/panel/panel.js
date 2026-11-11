@@ -18,7 +18,7 @@
     fs = require('fs'); path = require('path'); os = require('os');
   } else {
     // browser preview without After Effects
-    var mem = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true };
+    var mem = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true, unprecompTrim: false, unprecompSelect: true };
     U = { state: function () { return {}; }, check: function () { return Promise.resolve({ status: 'error', error: 'preview' }); } };
     S = { readSettings: function () { return mem; }, writeSettings: function (o) { for (var k in o) mem[k] = o[k]; return mem; },
           settingsDir: function () { return ''; }, VERSION: '0.4.0' };
@@ -61,6 +61,7 @@
       var k = cs[i].getAttribute('data-opt');
       cs[i].className = 'check' + (k === 'groupNulls' ? ' sub' + (set.precompGroups ? ' off' : '') : '') + (set[k] ? ' on' : '');
     }
+    $('unpreHint').textContent = [set.unprecompTrim ? 'trim' : '', set.unprecompSelect !== false ? 'select' : ''].filter(Boolean).join(' · ');
   }
 
   $('tNew').onclick = function () { save({ target: 'new' }); };
@@ -107,6 +108,44 @@
   Array.prototype.forEach.call(document.querySelectorAll('[data-host]'), function (b) {
     b.onclick = function () { host(b.getAttribute('data-host')).then(function (r) { toast(r.msg, r.ok ? 'ok' : 'err'); }); };
   });
+
+  // Un-Precomp + its gear: the drawer holds "Trim layers to the precomp length"
+  $('unpreBtn').onclick = function () {
+    host('unprecomp', JSON.stringify({ trim: !!set.unprecompTrim, select: set.unprecompSelect !== false })).then(function (r) { toast(r.msg, r.ok ? 'ok' : 'err'); });
+  };
+  $('unpreGear').onclick = function () {
+    var open = $('unpreDrawer').classList.toggle('open');
+    $('unpreGear').classList.toggle('on', open);
+  };
+
+  // Re-check missing fonts: tagged text layers -> fonts AE has now (exact or a similar name) -> applied
+  $('fontsBtn').onclick = function () {
+    if (!hasNode) return toast('Needs After Effects', 'err');
+    var F = require(dir + '/../fonts.js'), FM = require(dir + '/../runtime.js').fontmatch;
+    toast('Checking fonts…');
+    host('fontScan').then(function (r) {
+      if (!r.ok) throw new Error(r.msg);
+      var lines = r.msg.split('\n'), layers = +lines[0], wanted = lines.slice(1).filter(Boolean);
+      if (!wanted.length) { toast(layers ? 'Nothing to fix' : 'No text layers with a stand-in font in this project', 'ok'); return null; }
+      return F.installed(evalHost).then(function (have) {
+        if (!have) throw new Error('After Effects is busy (a dialog is open?)');
+        var map = {};
+        wanted.forEach(function (w) {
+          var p = w.split('|'), m = FM.match(p[0], p[1], have);
+          if (m) map[w] = m.font.ps;
+        });
+        return host('fontApply', JSON.stringify(map));
+      });
+    }).then(function (r) {
+      if (!r) return;
+      var lines = r.msg.split('\n');
+      toast(lines[0] + (lines.length > 1 ? ' · ' + (lines.length - 1) + ' still missing' : ''), r.ok ? 'ok' : 'err');
+      if (lines.length > 1) {
+        showWarnings(['Still not installed (install them, then press Re-check again):'].concat(lines.slice(1)));
+        $('sSystem').classList.remove('closed');                  // the list lives in System
+      }
+    }).catch(function (e) { toast('Re-check failed: ' + (e && e.message || e), 'err'); });
+  };
 
   var CMD = {
     importFile: function () {
