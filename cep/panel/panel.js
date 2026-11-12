@@ -18,7 +18,7 @@
     fs = require('fs'); path = require('path'); os = require('os');
   } else {
     // browser preview without After Effects
-    var mem = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true, unprecompTrim: false, unprecompSelect: true };
+    var mem = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true, unprecompTrim: false, unprecompSelect: true, unprecompExtend: false };
     U = { state: function () { return {}; }, check: function () { return Promise.resolve({ status: 'error', error: 'preview' }); } };
     S = { readSettings: function () { return mem; }, writeSettings: function (o) { for (var k in o) mem[k] = o[k]; return mem; },
           settingsDir: function () { return ''; }, VERSION: '0.4.0' };
@@ -61,7 +61,7 @@
       var k = cs[i].getAttribute('data-opt');
       cs[i].className = 'check' + (k === 'groupNulls' ? ' sub' + (set.precompGroups ? ' off' : '') : '') + (set[k] ? ' on' : '');
     }
-    $('unpreHint').textContent = [set.unprecompTrim ? 'trim' : '', set.unprecompSelect !== false ? 'select' : ''].filter(Boolean).join(' · ');
+    $('unpreHint').textContent = [set.unprecompTrim ? 'trim' : '', set.unprecompExtend ? 'extend' : '', set.unprecompSelect !== false ? 'select' : ''].filter(Boolean).join(' · ');
   }
 
   $('tNew').onclick = function () { save({ target: 'new' }); };
@@ -111,7 +111,7 @@
 
   // Un-Precomp + its gear: the drawer holds "Trim layers to the precomp length"
   $('unpreBtn').onclick = function () {
-    host('unprecomp', JSON.stringify({ trim: !!set.unprecompTrim, select: set.unprecompSelect !== false })).then(function (r) { toast(r.msg, r.ok ? 'ok' : 'err'); });
+    host('unprecomp', JSON.stringify({ trim: !!set.unprecompTrim, select: set.unprecompSelect !== false, extend: !!set.unprecompExtend })).then(function (r) { toast(r.msg, r.ok ? 'ok' : 'err'); });
   };
   $('unpreGear').onclick = function () {
     var open = $('unpreDrawer').classList.toggle('open');

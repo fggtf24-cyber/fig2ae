@@ -38,14 +38,28 @@ figma.showUI(__html__, { width: 300, height: 420, themeColors: true });
 
 // "Rasterize layer on export" (like AEUX): a mark stored on the node itself, kept in the file
 var RASTER_KEY = 'fig2ae-raster';
-function rasterMarked(n) { try { return n.getPluginData(RASTER_KEY) === '1'; } catch (e) { return false; } }
+// the mark holds the export scale: 's1'..'s4' (like Figma's export settings); '1' = marked before 0.4.13 (the Advanced scale)
+function rasterMark(n) { try { return n.getPluginData(RASTER_KEY) || ''; } catch (e) { return ''; } }
+function rasterMarked(n) { return rasterMark(n) !== ''; }
+function rasterScaleOf(n) { var m = /^s([1-4])$/.exec(rasterMark(n)); return m ? +m[1] : null; }
+// a marked layer shows it in its name: "* Logo"; unmarking takes the star away again
+var STAR = /^\*\s+/;
+function starName(n, on) {
+  try {
+    var nm = String(n.name || '');
+    if (on && !STAR.test(nm)) n.name = '* ' + nm;
+    if (!on && STAR.test(nm)) n.name = nm.replace(STAR, '');
+  } catch (e) {}
+}
+function cleanName(n) { var nm = String(n.name || ''); return rasterMarked(n) ? nm.replace(STAR, '') : nm; }
 
 function postSelection() {
-  var sel = figma.currentPage.selection, marked = 0;
-  for (var i = 0; i < sel.length; i++) if (rasterMarked(sel[i])) marked++;
+  var sel = figma.currentPage.selection, marked = 0, scales = {};
+  for (var i = 0; i < sel.length; i++) if (rasterMarked(sel[i])) { marked++; scales[rasterScaleOf(sel[i]) || 0] = 1; }
+  var ks = Object.keys(scales), markedScale = ks.length === 1 ? +ks[0] : null;
   var scan = null;
   try { scan = scanInvisible(sel); } catch (e) {}
-  figma.ui.postMessage({ type: 'sel', count: sel.length, marked: marked, scan: scan });
+  figma.ui.postMessage({ type: 'sel', count: sel.length, marked: marked, markedScale: markedScale, scan: scan });
 }
 
 /**
@@ -105,8 +119,16 @@ figma.ui.onmessage = async function (msg) {
   if (msg.type === 'toggleRaster') {
     var sel = figma.currentPage.selection, on = false;
     for (var i = 0; i < sel.length; i++) if (!rasterMarked(sel[i])) on = true;   // any unmarked -> mark all
-    try { for (var k = 0; k < sel.length; k++) sel[k].setPluginData(RASTER_KEY, on ? '1' : ''); }
+    var sc = Math.max(1, Math.min(4, Math.round(msg.scale) || 2));
+    try { for (var k = 0; k < sel.length; k++) { sel[k].setPluginData(RASTER_KEY, on ? 's' + sc : ''); starName(sel[k], on); } }
     catch (e) { figma.ui.postMessage({ type: 'error', message: 'Could not mark the layers (read-only file?)' }); }
+    postSelection();
+    return;
+  }
+  if (msg.type === 'rasterScale') {
+    // the 1x-4x chips: marked layers in the selection take the new scale
+    var sel2 = figma.currentPage.selection, sc2 = Math.max(1, Math.min(4, Math.round(msg.scale) || 2));
+    try { for (var q = 0; q < sel2.length; q++) if (rasterMarked(sel2[q])) sel2[q].setPluginData(RASTER_KEY, 's' + sc2); } catch (e) {}
     postSelection();
     return;
   }
@@ -195,7 +217,7 @@ async function buildDoc(o) {
     if (rasterMarked(n)) await pushRaster(n, M, o, layers);
     // whatever lies outside the frame is outside the comp too
     else await withClip(n, o, function () { return containerContent(n, M, o, layers, cw, ch, false); });
-    comp = { name: n.name, w: cw, h: ch, layers: layers, bg: solidBg(n) || undefined };
+    comp = { name: cleanName(n), w: cw, h: ch, layers: layers, bg: solidBg(n) || undefined };
     if (o.reference) await pushReference(n, M, o, layers, '');
   } else if (scene) {
     // part of a frame (one element, a group, several layers): the comp is the whole frame and the
@@ -584,16 +606,37 @@ function mergeBorder(node, out, fillsAt, fillsEnd, strokesAt) {
   var bb = node.absoluteBoundingBox;
   if (!bb) return;
   var ix = bb.x + inset - 0.5, iy = bb.y + inset - 0.5, ix2 = bb.x + bb.width - inset + 0.5, iy2 = bb.y + bb.height - inset + 0.5;
-  var kids = node.children || [];
-  for (var i = 0; i < kids.length; i++) {
-    if (kids[i].visible === false) continue;
-    var r = kids[i].absoluteRenderBounds || kids[i].absoluteBoundingBox;
-    if (!r) continue;
-    if (r.x < ix || r.y < iy || r.x + r.width > ix2 || r.y + r.height > iy2) return;      // a child reaches the border
-  }
+  if (reachesBand(node.children || [], ix, iy, ix2, iy2, 0)) return;                    // something drawn sits on the border
   bg.groups = bg.groups.concat(st.groups);                 // later groups are drawn on top: the border over the fill
   out.splice(strokesAt, 1);
   STATS.bordersMerged++;
+}
+/**
+ * Does anything that is DRAWN reach outside the inner rect? A wrapper frame that draws nothing itself
+ * (a full-size auto-layout box around the label) does not count — only what is inside it.
+ */
+function reachesBand(kids, ix, iy, ix2, iy2, depth) {
+  for (var i = 0; i < kids.length; i++) {
+    var k = kids[i];
+    if (k.visible === false || k.opacity === 0) continue;
+    if (k.type === 'TEXT' && !/\S/.test(String(k.characters || ''))) continue;
+    if (isContainer(k) && depth < 12 && !drawsItself(k)) {
+      if (reachesBand(k.children || [], ix, iy, ix2, iy2, depth + 1)) return true;
+      continue;
+    }
+    var r = k.absoluteRenderBounds || k.absoluteBoundingBox;
+    if (!r) continue;
+    if (r.x < ix || r.y < iy || r.x + r.width > ix2 || r.y + r.height > iy2) return true;
+  }
+  return false;
+}
+function drawsItself(n) {
+  function any(list) {
+    if (!list || list === figma.mixed) return !!list;
+    for (var i = 0; i < list.length; i++) if (list[i].visible !== false && paintAlpha(list[i]) > 0) return true;
+    return false;
+  }
+  return any(n.fills) || any(n.strokes) || liveEffects(n).length > 0;
 }
 
 /** the innermost group wins: layers already tagged by a nested group keep their own null */
@@ -604,7 +647,7 @@ function tagGroup(L, gid) {
 }
 
 async function pushRaster(node, M, o, out) {
-  var r = await rasterLayer(node, M, o, {});
+  var r = await rasterLayer(node, M, o, { scale: rasterScaleOf(node) || o.scale });
   if (r) out.push(r);
 }
 
@@ -1069,7 +1112,7 @@ function diamondGroups(P, w, h) {
 
 function baseLayer(node, x) {
   return {
-    name: node.name,
+    name: cleanName(node),         // "* Logo" (marked for pixels) arrives as "Logo"
     hidden: !visible(node),
     locked: !!node.locked,
     opacity: nodeOpacity(node),
@@ -1127,7 +1170,10 @@ async function nodeParts(node, M, o, selfOnly, which) {
   // fills, in paint order; vector paints share one shape layer
   if (fillPaths.length) {
     for (i = 0; i < fills.length; i++) {
-      if (isVectorPaint(fills[i]) && !fills[i].fx) { run.push(withParam({ paths: fillPaths, paint: fills[i] }, param)); continue; }
+      // AE effects (Gradient Ramp…) colour a whole layer: only for a fill alone on its layer. With a border or other
+      // fills the gradient stays a shape gradient (exact too), so fill and border are ONE shape layer
+      var alone = fills.length === 1 && !strokes.length && !(which === 'fills' && drawsItself({ strokes: node.strokes, fills: [], effects: [] }));
+      if (isVectorPaint(fills[i]) && (!fills[i].fx || (!alone && fills[i].kind !== 'solid'))) { run.push(withParam({ paths: fillPaths, paint: fills[i] }, param)); continue; }
       flush();
       if (fills[i].fx) { parts.push(fxLayer(node, M, fillPaths, fills[i], parts.length ? label + ' · gradient' : label, param)); continue; }
       L = await mattedPaint(node, M, o, fills[i], fillPaths, fills[i].kind === 'image' ? label : label + ' · gradient');
@@ -1706,12 +1752,17 @@ async function textParts(node, M, o) {
  * comp padded for an outside border) clips the children by a matte of that outline.
  */
 async function containerContent(node, innerM, o, layers, w, h, padded) {
+  var fillsAt = layers.length;
   var bgSkip = await emitSelf(node, innerM, o, layers, true, 'fills');
+  var fillsEnd = layers.length;
   var bgIn = bgEnter(node, bgSkip === true);
   try { await contentKids(node, innerM, o, layers, w, h, padded); } finally { if (bgIn) BGS.pop(); }
   var inner = liveEffects(node, 'INNER_SHADOW'), fp = geomPaths(node.fillGeometry);
   for (var i = 0; i < inner.length && fp.length; i++) layers.push(innerShadowLayer(node, innerM, inner[i], fp, node.name));
+  var strokesAt = layers.length;
   await emitSelf(node, innerM, o, layers, true, 'strokes');
+  // background + border in one layer here too (not under an inner shadow: that sits between them)
+  if (!(inner.length && fp.length)) mergeBorder(node, layers, fillsAt, fillsEnd, strokesAt);
 }
 async function contentKids(node, innerM, o, layers, w, h, padded) {
   var clips = node.clipsContent === true;
@@ -1898,11 +1949,12 @@ async function rasterLayer(node, M, o, opts) {
 
     var rb = src.absoluteRenderBounds;
     if (!rb || rb.width <= 0 || rb.height <= 0) return null;
-    var settings = { format: 'PNG', constraint: { type: 'SCALE', value: o.scale } };
+    var sc = opts.scale || o.scale;     // a marked layer's own scale, else the Advanced one
+    var settings = { format: 'PNG', constraint: { type: 'SCALE', value: sc } };
     if (P3) settings.colorProfile = 'SRGB';
     var bytes = await src.exportAsync(settings);
 
-    var s = o.scale;
+    var s = sc;
     var px = pngSize(bytes) || { w: Math.round(rb.width * s), h: Math.round(rb.height * s) };
     // Figma snaps exports to its pixel grid; when the PNG size says so, use the snapped origin
     var x0 = rb.x, y0 = rb.y;

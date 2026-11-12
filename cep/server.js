@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.12';
+var VERSION = '0.4.13';
 var updater = require(path.join(__dirname, 'updater.js'));
 var fonts = require(path.join(__dirname, 'fonts.js'));
 
@@ -29,7 +29,7 @@ var BUSY = 'EvalScript error.';
  *   autoUpdate    install new GitHub releases by itself (updater.js)
  */
 var DEFAULTS = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true,
-                 unprecompTrim: false, unprecompSelect: true };   // Un-Precomp: layers keep the in/out of the precomp layer (panel gear)
+                 unprecompTrim: false, unprecompSelect: true, unprecompExtend: false };   // Un-Precomp: layers keep the in/out of the precomp layer (panel gear)
 function settingsDir() {
   return process.platform === 'win32' ? path.join(process.env.APPDATA || os.homedir(), 'Fig2AE')
                                       : path.join(os.homedir(), 'Library', 'Application Support', 'Fig2AE');

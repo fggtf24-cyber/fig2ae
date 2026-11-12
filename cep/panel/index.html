@@ -65,7 +65,7 @@
   .act.gear.on svg { color: #fff; }
   .act .hint { margin-left: auto; font-size: 10.5px; color: var(--dim); }
   .drawer { max-height: 0; overflow: hidden; transition: max-height .18s ease; margin: -2px 0 4px; }
-  .drawer.open { max-height: 130px; }
+  .drawer.open { max-height: 200px; }
   .drawer .check { padding: 6px 2px 2px; }
   .drawer-note { font-size: 10.5px; color: var(--dim); padding: 0 2px 6px 24px; line-height: 1.35; }
 
@@ -133,6 +133,8 @@
       <div class="drawer" id="unpreDrawer">
         <div class="check" data-opt="unprecompTrim"><span class="box"></span>Trim layers to the precomp length</div>
         <div class="drawer-note">On: the layers start and end where the precomp layer did. Off: they keep their own length.</div>
+        <div class="check" data-opt="unprecompExtend"><span class="box"></span>Extend precomps to the end of the comp</div>
+        <div class="drawer-note">Precomps among the unpacked layers (and the ones inside them) run to the end of this comp.</div>
         <div class="check" data-opt="unprecompSelect"><span class="box"></span>Select the unpacked layers</div>
       </div>
       <button class="act" id="fontsBtn" title="Text layers Fig2AE set in a stand-in font get the real font, if it is installed now"><svg viewBox="0 0 24 24"><path d="M4 20l6-16h1l6 16M6.5 14h8"/><path d="M17 4.5a3 3 0 1 1 3 3"/><path d="M20 4.5V7.5h-3"/></svg>Re-check missing fonts</button>

@@ -122,8 +122,8 @@ $.global.F2A_HOST = (function () {
     function unprecomp(optsJson) {
         var c = activeComp();
         if (!c) return err('Open a composition first');
-        var sel = selected(c), pre = [], trim = false, pick = true, made = [];
-        try { var uo = optsJson ? eval('(' + optsJson + ')') : {}; trim = !!uo.trim; pick = uo.select !== false; } catch (e0) {}
+        var sel = selected(c), pre = [], trim = false, pick = true, extend = false, made = [];
+        try { var uo = optsJson ? eval('(' + optsJson + ')') : {}; trim = !!uo.trim; pick = uo.select !== false; extend = !!uo.extend; } catch (e0) {}
         for (var i = 0; i < sel.length; i++) if (sel[i].source instanceof CompItem) pre.push(sel[i]);
         if (!pre.length) return err('Select a precomp layer');
         var notes = [], moved = 0, res;
@@ -131,6 +131,7 @@ $.global.F2A_HOST = (function () {
         // no "return" inside catch/finally: ExtendScript then throws "Object of type Error found where…"
         try {
             for (var p = 0; p < pre.length; p++) moved += unprecompOne(c, pre[p], notes, trim, made);
+            if (extend) extendPrecomps(c, made, notes);
             if (pick) {                                             // the unpacked layers end up selected (panel gear)
                 for (var s = 1; s <= c.numLayers; s++) c.layer(s).selected = false;
                 for (var m = 0; m < made.length; m++) try { made[m].selected = true; } catch (eS) {}
@@ -324,6 +325,37 @@ $.global.F2A_HOST = (function () {
         var dx = (r1.left + r1.width * k) - (r0.left + r0.width * k), dy = (r1.top + r1.height / 2) - (r0.top + r0.height / 2);
         var v = a.value;
         a.setValue(v.length > 2 ? [v[0] + dx, v[1] + dy, v[2]] : [v[0] + dx, v[1] + dy]);
+    }
+
+    /**
+     * "Extend precomps to the end of the comp": every precomp among the unpacked layers runs to the end of this
+     * comp — its comp gets longer, and so does every precomp inside it, all the way down. Inside a lengthened comp,
+     * a layer that ran to its old end runs to the new end; a layer that ends earlier on purpose keeps its out point.
+     */
+    function extendPrecomps(c, made, notes) {
+        var seen = {}, n = 0;
+        for (var i = 0; i < made.length; i++) {
+            var L = made[i];
+            if (!(L.source instanceof CompItem) || L.timeRemapEnabled || L.stretch !== 100) continue;
+            var need = c.duration - L.startTime;
+            if (need <= 0) continue;
+            lengthen(L.source, need, seen);
+            unlocked(L, function () { L.outPoint = c.duration; });
+            n++;
+        }
+        if (n) notes.push(n + ' precomp(s) extended to the end of the comp');
+    }
+    function lengthen(comp, dur, seen) {
+        if (seen[comp.id] && seen[comp.id] >= dur) return;
+        seen[comp.id] = dur;
+        var old = comp.duration, f = comp.frameDuration || 1 / 30;
+        if (old < dur) comp.duration = dur;
+        for (var k = 1; k <= comp.numLayers; k++) {
+            var L = comp.layer(k);
+            if (L.timeRemapEnabled || L.stretch !== 100) continue;
+            if (L.source instanceof CompItem) lengthen(L.source, comp.duration - L.startTime, seen);
+            if (L.outPoint >= old - f / 2 && L.outPoint < comp.duration) (function (Lk) { unlocked(Lk, function () { Lk.outPoint = comp.duration; }); })(L);
+        }
     }
 
     /** Toggle guide layer visibility (the Figma reference frame is a guide layer) */

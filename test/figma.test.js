@@ -449,7 +449,10 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
   assert.strictEqual(L.card.comp.w, 88, 'прекомп фрейма расширен на внешнюю обводку');
   var cl = L.card.comp.layers.filter(function (l) { return l.name === 'card · content'; })[0];
   assert.ok(cl && cl.matte && cl.matte.layer.type === 'shape', 'дети скруглённого фрейма обрезаются маттом по его форме');
-  assert.strictEqual(L.card.comp.layers[L.card.comp.layers.length - 1].name, 'card · stroke', 'обводка фрейма поверх детей');
+  // the outside border never meets the (clipped) children: it joins the background layer, one shape for the frame
+  var cbg = L.card.comp.layers.filter(function (l) { return l.name === 'card · background'; })[0];
+  assert.ok(cbg && cbg.groups.length === 2 && cbg.groups[1].stroke, 'фон и внешняя обводка — один слой');
+  assert.ok(!L.card.comp.layers.some(function (l) { return l.name === 'card · stroke'; }), 'отдельного слоя обводки нет');
 
   // shear -> Transform effect in AE; rotation/scale untouched
   near(L.skew.shear, 0.5); near(L.skew.rot, 0); near(L.skew.scale[1], 100);
@@ -587,11 +590,23 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
       var page = node({ type: 'FRAME', name: 'page', x: 210, y: 210, width: 180, height: 180, clipsContent: false, children: [card, ghost, blank],
         fills: [solid(0.15, 0.15, 0.15)], fillGeometry: [{ data: rectPath(180, 180), windingRule: 'NONZERO' }] });
       [r1, r2].forEach(function (c) { c.parent = card; }); [r3, r4].forEach(function (c) { c.parent = ghost; });
+      // a button: fill + inside border, a full-size wrapper that draws nothing, the label well inside it
+      var lbl = rect('lbl', 60, 360, 20, 8), lbl2 = rect('lbl2', 84, 360, 6, 8);
+      var inner2 = node({ type: 'FRAME', name: 'inner2', x: 50, y: 350, width: 50, height: 28, clipsContent: false, children: [lbl, lbl2], fills: [], fillGeometry: [] });
+      var btn = node({ type: 'FRAME', name: 'btn', x: 50, y: 350, width: 50, height: 28, clipsContent: false, children: [inner2],
+        fills: [solid(0.1, 0.1, 0.3)], strokes: [solid(1, 1, 1)], strokeWeight: 1, strokeAlign: 'INSIDE',
+        fillGeometry: [{ data: rectPath(50, 28), windingRule: 'NONZERO' }], strokeGeometry: [{ data: 'M0 -1 L50 -1 L50 1 L0 1 Z', windingRule: 'NONZERO' }] });
+      lbl.parent = lbl2.parent = inner2; inner2.parent = btn;
+      // a rectangle with a two-colour gradient AND a border: one shape layer (shape gradient), not ramp + border layers
+      var grs = node({ type: 'RECTANGLE', name: 'grs', x: 120, y: 350, width: 60, height: 28, strokeWeight: 2, strokeAlign: 'CENTER',
+        fills: [{ type: 'GRADIENT_LINEAR', visible: true, opacity: 1, blendMode: 'NORMAL', gradientTransform: [[1, 0, 0], [0, 1, 0]],
+          gradientStops: [{ position: 0, color: { r: 1, g: 0, b: 0, a: 1 } }, { position: 1, color: { r: 0, g: 0, b: 1, a: 1 } }] }],
+        strokes: [solid(1, 1, 1)], fillGeometry: [{ data: rectPath(60, 28), windingRule: 'NONZERO' }], strokeGeometry: [{ data: 'M0 -1 L60 -1 L60 1 L0 1 Z', windingRule: 'NONZERO' }] });
       [card, ghost, blank].forEach(function (c) { c.parent = page; });
-      var chart = node({ type: 'FRAME', name: 'Chart', x: 0, y: 0, width: 400, height: 400, clipsContent: true, children: [price, dashed, sel, cell, wrap, page],
+      var chart = node({ type: 'FRAME', name: 'Chart', x: 0, y: 0, width: 400, height: 400, clipsContent: true, children: [price, dashed, sel, cell, wrap, page, btn, grs],
         fills: [], fillGeometry: [{ data: rectPath(400, 400), windingRule: 'NONZERO' }] });
       chart.parent = { type: 'PAGE' };
-      [price, dashed, sel, cell, wrap, page].forEach(function (c) { c.parent = chart; });
+      [price, dashed, sel, cell, wrap, page, btn, grs].forEach(function (c) { c.parent = chart; });
       figma.currentPage.selection = [chart];
       return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false, reference: false } }).then(function () {
         var d5 = JSON.parse(result.json), L5 = {};
@@ -620,6 +635,9 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
         assert.ok(!L5['ghost · background'], 'заливка 0% — без слоя');
         assert.ok(L5.r1 && L5.r3, 'содержимое на месте');
         assert.ok(!d5.comp.layers.some(function (l) { return l.name === 'blank'; }), 'пустой текст — без слоя');
+        assert.ok(!L5['btn · stroke'] && L5['btn · background'] && L5['btn · background'].groups.length === 2, 'обёртка, которая ничего не рисует, не мешает склеить фон и обводку');
+        assert.ok(L5.grs && !L5.grs.fx && L5.grs.groups.length === 2 && L5.grs.groups[0].paint.kind === 'linear' && L5.grs.groups[1].stroke, 'градиент + обводка — один слой');
+        assert.ok(!L5['grs · stroke'] && !L5['grs · 2'], 'без второго слоя');
         assert.ok(!L5['Container · stroke'], 'обводка склеена с фоном');
         assert.strictEqual(L5['Container · background'].groups.length, 2, 'фон + обводка — один слой');
         assert.ok(L5.dot1.group === nulls[0].gid && L5.dot2.group === nulls[0].gid && L5['Container · background'].group === nulls[0].gid);
@@ -635,7 +653,28 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
         assert.ok(!L6['Container:margin'], 'обёртка вокруг одного элемента — не прекомп');
         assert.ok(L6.Container && L6.Container.type === 'precomp', 'плашка — прекомп');
         assert.ok(L6.page && L6.page.type === 'precomp' && L6.page.comp.bg, 'у прекомпа страницы её серый — фон композиции');
-          return d4;
+          // "Rasterize layer on export": the star in the name, the 1x-4x scale in the mark, both undone by a second click
+          var store = {}, logo = node({ type: 'RECTANGLE', name: 'Logo', x: 10, y: 10, width: 20, height: 10, fills: [solid(1, 0, 0)],
+            fillGeometry: [{ data: rectPath(20, 10), windingRule: 'NONZERO' }],
+            exportAsync: function (s) { assert.strictEqual(s.constraint.value, 3, 'экспорт в масштабе метки'); return Promise.resolve(solidPng(60, 30, [255, 0, 0, 255])); } });
+          logo.getPluginData = function (k) { return store[k] || ''; };
+          logo.setPluginData = function (k, v) { store[k] = v; };
+          logo.parent = { type: 'PAGE' };
+          figma.currentPage.selection = [logo];
+          return handler({ type: 'toggleRaster', scale: 3 }).then(function () {
+            assert.strictEqual(logo.name, '* Logo', 'помеченный слой — со звёздочкой');
+            assert.strictEqual(store['fig2ae-raster'], 's3');
+            return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 1, hidden: false, reference: false } });
+          }).then(function () {
+            var lay = JSON.parse(result.json).comp.layers[0];
+            assert.strictEqual(lay.type, 'image'); assert.strictEqual(lay.name, 'Logo', 'в AE без звёздочки');
+            assert.strictEqual(lay.png.scale, 3, 'AE уменьшит обратно в 3 раза');
+            return handler({ type: 'toggleRaster', scale: 3 });
+          }).then(function () {
+            assert.strictEqual(logo.name, 'Logo', 'повторное нажатие убирает звёздочку');
+            assert.strictEqual(store['fig2ae-raster'], '');
+            return d4;
+          });
         });
       });
     }).then(function (d4) {
