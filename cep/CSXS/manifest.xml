@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Fig2AE: hidden server (starts with After Effects, takes exports from the Figma plugin, see server.js)
      + the AEUX-style panel: Window > Extensions > Fig2AE (panel/) -->
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.fig2ae" ExtensionBundleVersion="0.4.13" ExtensionBundleName="Fig2AE"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.fig2ae" ExtensionBundleVersion="0.4.14" ExtensionBundleName="Fig2AE"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
-    <Extension Id="com.fig2ae.server" Version="0.4.13" />
-    <Extension Id="com.fig2ae.panel" Version="0.4.13" />
+    <Extension Id="com.fig2ae.server" Version="0.4.14" />
+    <Extension Id="com.fig2ae.panel" Version="0.4.14" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>

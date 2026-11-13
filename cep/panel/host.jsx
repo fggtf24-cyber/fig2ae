@@ -252,7 +252,7 @@ $.global.F2A_HOST = (function () {
         return out;
     }
     function parseTag(s) {
-        var parts = String(s).substring(FONT_TAG.length).split(';'), out = [];
+        var parts = String(s).split(/\r\n|\r|\n/)[0].substring(FONT_TAG.length).split(';'), out = [];   // line 1; a Figma link may follow
         for (var i = 0; i < parts.length; i++) {
             var m = /^(\d+)-(\d+):(.*)\|(.*)$/.exec(parts[i]);
             if (m) out.push({ start: +m[1], end: +m[2], family: m[3], style: m[4] });
@@ -303,7 +303,8 @@ $.global.F2A_HOST = (function () {
                 unlocked(L, function () {
                     prop.setValue(td);
                     keepInk(L, r0);
-                    L.comment = keep.length ? FONT_TAG + (function () { var a = []; for (var q = 0; q < keep.length; q++) a.push(keep[q].start + '-' + keep[q].end + ':' + keep[q].family + '|' + keep[q].style); return a.join(';'); })() : '';
+                    var rest = String(L.comment).split(/\r\n|\r|\n/).slice(1).join('\r');
+                    L.comment = (keep.length ? FONT_TAG + (function () { var a = []; for (var q = 0; q < keep.length; q++) a.push(keep[q].start + '-' + keep[q].end + ':' + keep[q].family + '|' + keep[q].style); return a.join(';'); })() : '') + (rest ? (keep.length ? '\r' : '') + rest : '');
                 });
                 layersFixed++;
             }
@@ -404,7 +405,7 @@ $.global.F2A_HOST = (function () {
         } finally { app.endUndoGroup(); }
         return ok(nulls.length + ' group layer(s) deleted, ' + kids + ' layer(s) kept in place');
     }
-    function isGroupNull(L) { return L.nullLayer && L.comment === GROUP_TAG; }
+    function isGroupNull(L) { return L.nullLayer && String(L.comment).indexOf(GROUP_TAG) === 0; }
 
     /* ------------------------------------------------------------ SYSTEM */
 

@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.13';
+var VERSION = '0.4.14';
 var updater = require(path.join(__dirname, 'updater.js'));
 var fonts = require(path.join(__dirname, 'fonts.js'));
 
@@ -22,6 +22,7 @@ var BUSY = 'EvalScript error.';
 /**
  * Panel settings (the Fig2AE panel in AE writes them, AEUX-style):
  *   target        'new' | 'current'  — new comp, or into the active comp
+ *                 (an export with replace: true always goes as 'replace': into the layer selected in AE)
  *   imagePath     where exports and their images are kept ('' = Documents/Fig2AE)
  *   parametric    rectangles/ellipses as AE parametric shapes
  *   precompGroups every Figma group/frame becomes a precomp (off: a null parents its layers)
@@ -160,7 +161,7 @@ function start(evalHost, opts) {
     var win = opts.dir ? null : progressWindow(doc.comp.name);
     try {
       for (var waited = 0; ; waited += retryMs) {
-        var out = await evalHost(importCode(file, { target: set.target, parametric: set.parametric, precompGroups: set.precompGroups }));
+        var out = await evalHost(importCode(file, { target: doc.update === true ? 'update' : doc.replace === true ? 'replace' : set.target, parametric: set.parametric, precompGroups: set.precompGroups }));
         if (out !== BUSY) {
           var r = parseResult(out); r.file = file;
           if (moved && r.log) r.log.unshift('No access to "' + moved + '": images of this import are in "' + folder + '"');
@@ -220,6 +221,26 @@ function start(evalHost, opts) {
       var pr = null;
       try { pr = JSON.parse(fs.readFileSync(path.join(settingsDir(), 'progress.json'), 'utf8')); } catch (e) {}
       send(res, 200, { ok: true, progress: pr });
+      return;
+    }
+    // "Check for updates" in the Figma plugin: the same check as the AE panel's button (installs from GitHub)
+    if (req.method === 'POST' && /^\/update\/check\b/.test(req.url)) {
+      logEvent('update', 'check requested from the Figma plugin');
+      updater.check(VERSION).then(function (u) { send(res, 200, { ok: true, version: VERSION, update: u }); },
+                                  function (e) { send(res, 200, { ok: false, error: String(e && e.message || e) }); });
+      return;
+    }
+    // the installed Figma plugin files: an open plugin window reloads itself into them (no closing it)
+    if (req.method === 'GET' && /^\/figma\/(code\.js|ui\.html)\b/.test(req.url)) {
+      var inst = null;
+      try { inst = JSON.parse(fs.readFileSync(path.join(settingsDir(), 'install.json'), 'utf8')); } catch (e) {}
+      var dir = (inst && inst.figmaPlugin) || path.join(process.env.LOCALAPPDATA || os.homedir(), 'Fig2AE', 'figma-plugin');
+      var fname = /code\.js/.test(req.url) ? 'code.js' : 'ui.html';
+      try {
+        var body = fs.readFileSync(path.join(dir, fname), 'utf8');
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(body);
+      } catch (e) { send(res, 404, { ok: false, error: 'the Figma plugin is not installed in ' + dir }); }
       return;
     }
     if (req.method === 'GET' && /^\/log\b/.test(req.url)) {

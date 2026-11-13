@@ -245,7 +245,7 @@
     try { r = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { return; }
     var when = new Date(r.time), hh = ('0' + when.getHours()).slice(-2) + ':' + ('0' + when.getMinutes()).slice(-2);
     $('lastText').textContent = r.ok ? '"' + r.comp + '" · ' + hh : 'failed · ' + hh;
-    $('lastText').title = r.ok ? r.comp + ' (' + (r.mode === 'current' ? 'into current comp' : 'new comp') + ', ' + r.secs.toFixed(1) + ' s)' : r.error;
+    $('lastText').title = r.ok ? r.comp + ' (' + (r.mode === 'update' ? 'updated from Figma' : r.mode === 'replace' ? 'replaced the selected layer' : r.mode === 'current' ? 'into current comp' : 'new comp') + ', ' + r.secs.toFixed(1) + ' s)' : r.error;
     showWarnings(r.log);
     if (!first) toast(r.ok ? '✓ "' + r.comp + '" imported' + (r.log.length ? ' · ' + r.log.length + ' warning(s) in System' : '')
                            : 'Import failed: ' + r.error, r.ok ? 'ok' : 'err');

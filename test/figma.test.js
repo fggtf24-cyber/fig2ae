@@ -502,7 +502,7 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
   // precomp): a null for one layer is just a link in a chain of nulls -> none
   assert.ok(!doc.comp.layers.some(function (l) { return l.type === 'null' && l.name === 'maskGroup'; }), 'группа из одного слоя — без null');
   assert.ok(L['mask · masked'] && !L['mask · masked'].group, 'её единственный слой остаётся без родителя');
-  assert.ok(!L.linH.groups[0].param, 'без опции — обычные пути');
+  assert.ok(L.linH.groups[0].param && L.linH.groups[0].param.kind === 'rect', 'прямоугольник — всегда AE Rectangle, не path');
 
   var first = doc;
   return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false, reference: false, precompGroups: true, parametric: true } }).then(function () {
@@ -673,7 +673,69 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
           }).then(function () {
             assert.strictEqual(logo.name, 'Logo', 'повторное нажатие убирает звёздочку');
             assert.strictEqual(store['fig2ae-raster'], '');
-            return d4;
+            // a 16:9 shot inside a taller storyboard card: the shot is the comp, not the card (no vertical shift)
+            var dot = node({ type: 'RECTANGLE', name: 'dot', x: 100, y: 300, width: 20, height: 20, fills: [solid(1, 0, 0)], fillGeometry: [{ data: rectPath(20, 20), windingRule: 'NONZERO' }] });
+            var shot = node({ type: 'FRAME', name: 'Shot', x: 0, y: 200, width: 1920, height: 1080, clipsContent: true, children: [dot] });
+            var card = node({ type: 'FRAME', name: 'Card', x: 0, y: 0, width: 1920, height: 1486, children: [shot] });
+            card.parent = { type: 'PAGE' }; shot.parent = card; dot.parent = shot;
+            card.id = '1:0'; shot.id = '1:1'; dot.id = '1:2';
+            figma.currentPage.selection = [shot];
+            return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 1, hidden: false, reference: false } }).then(function () {
+              var c = JSON.parse(result.json).comp;
+              assert.strictEqual(c.w + 'x' + c.h, '1920x1080', 'кадр 16:9 — сама композиция, а не карточка вокруг');
+              near(c.layers[0].pos[0] - c.layers[0].anchor[0], 100); near(c.layers[0].pos[1] - c.layers[0].anchor[1], 100);
+              // "Update in Ae" needs to know where each layer came from and where the comp sits on the canvas
+              assert.strictEqual(c.fid, '1:1'); assert.strictEqual(c.layers[0].fid, '1:2'); assert.strictEqual(c.layers[0].pfid, '1:1');
+              assert.ok(c.origin && c.origin[1] - shot.absoluteTransform[1][2] === 0, 'начало координат кадра на холсте');
+              return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 1, hidden: false, reference: true, update: true } });
+            }).then(function () {
+              var d = JSON.parse(result.json);
+              assert.strictEqual(d.update, true); assert.deepStrictEqual(d.roots, ['1:1']);
+              assert.strictEqual(d.comp.fid, '1:1', 'обновление фрейма — его содержимое, как при импорте');
+              assert.strictEqual(d.comp.layers.length, 1, 'без референса');
+              figma.currentPage.selection = [dot];
+              return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 1, hidden: false, reference: false } });
+            }).then(function () {
+              var c = JSON.parse(result.json).comp;
+              assert.strictEqual(c.w + 'x' + c.h, '1920x1080', 'элемент внутри кадра — композиция размером с кадр');
+              near(c.layers[0].pos[1] - c.layers[0].anchor[1], 100);
+              // "Replace selected AE layer": the comp is what the element renders, the raster mark of the element is ignored
+              var pill = node({ type: 'RECTANGLE', name: '* Pill', x: 300, y: 400, width: 200, height: 40, cornerRadius: 20, cornerSmoothing: 0.6,
+                fills: [solid(0, 0, 0)], fillGeometry: [{ data: rectPath(200, 40), windingRule: 'NONZERO' }] });
+              pill.getPluginData = function (k) { return k === 'fig2ae-raster' ? 's3' : ''; };
+              pill.parent = shot;
+              figma.currentPage.selection = [pill];
+              return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 1, hidden: false, reference: true, replace: true } });
+            }).then(function () {
+              var d = JSON.parse(result.json), c = d.comp;
+              assert.strictEqual(d.replace, true, 'экспорт помечен как замена');
+              assert.strictEqual(c.w + 'x' + c.h, '200x40', 'композиция — ровно элемент, не кадр');
+              assert.strictEqual(c.layers.length, 1, 'без референса');
+              assert.strictEqual(c.layers[0].type, 'shape', 'помеченный на растр — всё равно вектор');
+              var pr = c.layers[0].groups[0].param;
+              assert.ok(pr && pr.kind === 'rect' && pr.r === 20, 'таблетка со сглаживанием — AE Rectangle с Roundness');
+              // a coin icon: a frame with no fill and no clip, a glow with spread, a circle inside — the glow is a vector
+              // copy of the circle (grown, blurred), and the precomp is big enough for the glow of what is inside it
+              var coin = node({ type: 'ELLIPSE', name: 'coin', x: 507, y: 507, width: 28, height: 28, fills: [solid(0.2, 0.1, 0)],
+                fillGeometry: [{ data: 'M0 14C0 6.3 6.3 0 14 0C21.7 0 28 6.3 28 14C28 21.7 21.7 28 14 28C6.3 28 0 21.7 0 14Z', windingRule: 'NONZERO' }],
+                absoluteRenderBounds: { x: FX + 490, y: FY + 490, width: 62, height: 62 } });
+              var icon = node({ type: 'FRAME', name: 'Icon', x: 500, y: 500, width: 41, height: 41, clipsContent: false, fills: [], children: [coin],
+                effects: [{ type: 'DROP_SHADOW', visible: true, radius: 16, spread: 4, offset: { x: 0, y: 0 }, color: { r: 1, g: 0.6, b: 0.3, a: 1 }, blendMode: 'NORMAL' }],
+                absoluteRenderBounds: { x: FX + 500, y: FY + 500, width: 41, height: 41 } });
+              var row = node({ type: 'FRAME', name: 'Row', x: 500, y: 500, width: 180, height: 41, clipsContent: false, fills: [], children: [icon],
+                absoluteRenderBounds: { x: FX + 500, y: FY + 500, width: 180, height: 41 } });
+              row.parent = { type: 'PAGE' }; icon.parent = row; coin.parent = icon;
+              figma.currentPage.selection = [row];
+              return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 1, hidden: false, reference: false, precompGroups: true } });
+            }).then(function () {
+              var d = JSON.parse(result.json), ic = null;
+              (function find(ls) { ls.forEach(function (l) { if (l.name === 'Icon') ic = l; if (l.comp) find(l.comp.layers); }); })(d.comp.layers);
+              assert.ok(ic && ic.type === 'precomp', 'иконка — прекомп');
+              assert.ok(ic.comp.layers.some(function (l) { return l.name === 'Icon · shadow' && l.groups[0].spread === 4; }), 'свечение со spread — векторной копией круга');
+              assert.ok(!(ic.effects || []).some(function (e) { return e.type === 'SHADOW'; }), 'без второй тени эффектом');
+              assert.ok(!d.warnings.some(function (w) { return /spread/.test(w); }), 'без предупреждения про spread');
+              return d4;
+            });
           });
         });
       });

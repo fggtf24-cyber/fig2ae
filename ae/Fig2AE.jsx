@@ -25,7 +25,8 @@
 
     var G = F2A_GEOM;
     var LOG = [];
-    var fontCache = {}, imgCache = {}, imgSeq = 0, gradSeq = 0, assets = null, openedComps = {};
+    var RUN_ID = new Date().getTime().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+    var fontCache = {}, imgCache = {}, imgSeq = 0, gradSeq = 0, assets = null, openedComps = {}, gradFiles = [];
     var missingFonts = {};  // "Family Style" -> { sub, layers }
     var lastInk = null;   // set by placeByInk for the text layer being built (AE host objects take no expandos)
     function note(t) { if (LOG.join('\n').indexOf(t) < 0) LOG.push(t); }
@@ -177,9 +178,25 @@
         if (toWorking) recolor(doc.comp, toWorking);
 
         var t0 = new Date().getTime(), comp = null, opts = readOpts(doc), mode = 'new', cancelled = null;
-        var target = null, n0 = 0, at = 0, anchor = null;
-        app.beginUndoGroup('Fig2AE: import from Figma');
+        var target = null, n0 = 0, at = 0, anchor = null, replaceIn = null, updateIn = null, updateSel = null;
+        assignKeys(doc.comp);
+        app.beginUndoGroup(opts.target === 'update' ? 'Fig2AE: update from Figma' : 'Fig2AE: import from Figma');
         try {
+            if (opts.target === 'update') {
+                updateIn = activeComp();
+                if (!updateIn) throw new Error('Open the composition to update (its layers or the precomp of this Figma element)');
+                doc.fps = updateIn.frameRate; doc.duration = updateIn.duration;
+                updateSel = updateIn.selectedLayers;
+            }
+            if (opts.target === 'replace') {
+                // "Replace selected AE layer": exactly one layer selected in the active comp, read before the scratch comp opens
+                var rc = activeComp(), rsel = rc ? rc.selectedLayers : [];
+                if (!rc || rsel.length !== 1) throw new Error(rc ? 'Select exactly ONE layer in "' + rc.name + '" to replace (selected: ' + rsel.length + ')'
+                                                                 : 'Open the composition and select the layer to replace');
+                replaceIn = { comp: rc, layer: rsel[0] };
+                doc.fps = rc.frameRate;
+                doc.duration = Math.max(rc.duration, rsel[0].outPoint - rsel[0].startTime);
+            }
             target = opts.target === 'current' ? activeComp() : null;
             if (opts.target === 'current' && !target) note('"Current" is selected, but no composition is active — a new comp was created');
             anchor = target ? anchorOf(target) : null;      // read before anything changes the selection
@@ -188,18 +205,24 @@
             // shown in the viewer after every added layer, which makes big frames take minutes.
             // Opened after reading the active comp: opening it makes it the active item.
             openScratch();
-            if (target) {
+            if (updateIn) {
+                mode = 'update';
+                comp = updateIn;
+                updateFromFigma(updateIn, doc, updateSel || []);
+                anchor = null;
+            } else if (target) {
                 // like AEUX "Current": the layers go into the active comp, the frame centred in it
                 mode = 'current';
                 var dx = (target.width - compSide(doc.comp.w, doc.comp.name)) / 2, dy = (target.height - compSide(doc.comp.h, doc.comp.name)) / 2;
                 if (dx || dy) for (var i = 0; i < doc.comp.layers.length; i++) shiftLayer(doc.comp.layers[i], dx, dy);
+                if (doc.comp.origin) doc.comp.origin = [doc.comp.origin[0] - dx, doc.comp.origin[1] - dy];
                 // precomps get the frame rate and length of the comp they go into
                 doc.fps = target.frameRate; doc.duration = target.duration;
                 n0 = target.numLayers; at = target.time;
                 // a new Figma reference replaces the one from the previous import: remember the old ones now
                 var hasRef = false, oldRefs = [];
                 for (var r = 0; r < doc.comp.layers.length; r++) if (doc.comp.layers[r].guide) hasRef = true;
-                if (hasRef) for (var q = 1; q <= n0; q++) if (target.layer(q).comment === REF_TAG) oldRefs.push(target.layer(q));
+                if (hasRef) for (var q = 1; q <= n0; q++) if (String(target.layer(q).comment).indexOf(REF_TAG) === 0) oldRefs.push(target.layer(q));
                 comp = target;
                 fillComp(target, doc.comp, doc);
                 startAt(target, target.numLayers - n0, at);
@@ -208,6 +231,8 @@
             } else {
                 doc.comp.name = (doc.comp.name || 'comp') + FOLDERS.suffix;
                 comp = buildComp(doc.comp, doc, true);
+                if (doc.comp.fid && doc.comp.origin && !replaceIn) setLink(comp, { id: doc.comp.fid, o: doc.comp.origin });
+                if (replaceIn) { comp = replaceLayer(replaceIn.comp, replaceIn.layer, comp); mode = 'replace'; }
             }
         } catch (e) {
             if (e === CANCEL) cancelled = PROG.cancel;
@@ -218,6 +243,9 @@
             if (target) { startAt(target, target.numLayers - n0, at); placeAbove(target, target.numLayers - n0, anchor); }
             if (!comp) comp = lastBuilt;
             LOG.unshift('Stopped by you at layer ' + PROG.n + ' of ' + PROG.total + ' — what was built so far is kept');
+        } else if (cancelled === 'cancel' && updateIn) {
+            LOG.unshift('Update stopped — what was already updated stays (Edit → Undo takes the whole update back)');
+            comp = updateIn;
         } else if (cancelled === 'cancel') {
             // take everything out again: the new layers of the target comp, and the scene folder with its comps and pictures
             if (target) for (var d = target.numLayers - n0; d >= 1; d--) try { var dl = target.layer(1); dl.locked = false; dl.remove(); } catch (e2) {}
@@ -226,6 +254,7 @@
             mode = 'cancelled';
         }
         if (comp && cancelled !== 'cancel') try { comp.openInViewer(); } catch (e4) {}
+        for (var gf = 0; gf < gradFiles.length; gf++) try { gradFiles[gf].remove(); } catch (e6) {}
         try {
             if (FOLDERS && FOLDERS.scene && cancelled !== 'cancel') {
                 if (FOLDERS.scene.numItems === 0) FOLDERS.scene.remove();          // "Current" with nothing new for the project panel
@@ -308,6 +337,585 @@
         return c;
     }
 
+    /**
+     * "Replace selected AE layer": built (the comp of the Figma element, its render bounds at 1 unit = 1 px)
+     * takes the place of the layer old in comp rc, at the same size.
+     *  - a layer with a source (a rasterized picture, footage, a precomp): its source is swapped for a comp of
+     *    the SAME pixel size holding built scaled to fit — every transform, keyframe, effect, mask, matte,
+     *    parent and timing stays as it is (a 3× raster: 3× pixels, the vector content is scaled 300% inside);
+     *  - a shape/text layer (nothing to swap): built goes right above it, parented to it and fitted to its
+     *    bounds, and the old layer is switched off.
+     * The comp the user was in is returned (it is shown again at the end).
+     */
+    function replaceLayer(rc, old, built) {
+        var W = built.width, H = built.height;
+        function fit(w, h) {
+            var k = Math.min(w / W, h / H);
+            if (Math.abs((W / H) / (w / h) - 1) > 0.02)
+                note('Replace: the Figma element (' + W + '×' + H + ') and "' + old.name + '" (' + Math.round(w) + '×' + Math.round(h) +
+                     ') have different proportions — fitted inside and centred');
+            return k;
+        }
+        var lk = old.locked;
+        if (lk) old.locked = false;
+        var src = null;
+        try { src = old.source; } catch (e) {}
+        if (src && (src instanceof CompItem || src instanceof FootageItem) && src.width > 0 && src.height > 0) {
+            var SW = src.width, SH = src.height, k = fit(SW, SH), use = built;
+            if (Math.abs(SW - W) > 0.5 || Math.abs(SH - H) > 0.5) {
+                use = app.project.items.addComp(built.name, SW, SH, 1, built.duration, built.frameRate);
+                use.comment = WRAP_TAG;
+                try { use.parentFolder = built.parentFolder; } catch (e1) {}
+                var inner = use.layers.add(built);
+                inner.property('ADBE Transform Group').property('ADBE Anchor Point').setValue([W / 2, H / 2]);
+                inner.property('ADBE Transform Group').property('ADBE Position').setValue([SW / 2, SH / 2]);
+                inner.property('ADBE Transform Group').property('ADBE Scale').setValue([k * 100, k * 100]);
+                try { inner.collapseTransformation = true; } catch (e2) {}   // vectors stay sharp at any size
+                try { built.parentFolder = subFolder('pre', 'Precomps'); } catch (e3) {}
+            }
+            var keepName = old.name;
+            old.replaceSource(use, false);
+            try { if (old.name !== keepName) old.name = keepName; } catch (e4) {}
+            old.selected = true;
+        } else {
+            var r = old.sourceRectAtTime(rc.time, false);
+            if (!(r.width > 0 && r.height > 0)) throw new Error('Replace: "' + old.name + '" has no size to fit into');
+            var k2 = fit(r.width, r.height);
+            var nl = rc.layers.add(built);
+            nl.moveBefore(old);
+            nl.parent = old;
+            var T = nl.property('ADBE Transform Group');
+            T.property('ADBE Anchor Point').setValue([W / 2, H / 2]);
+            T.property('ADBE Position').setValue([r.left + r.width / 2, r.top + r.height / 2]);
+            T.property('ADBE Scale').setValue([k2 * 100, k2 * 100]);
+            try { nl.collapseTransformation = true; } catch (e6) {}
+            nl.startTime = old.startTime; nl.inPoint = old.inPoint; nl.outPoint = old.outPoint;
+            old.enabled = false;
+            note('Replace: "' + old.name + '" has no picture to swap — the Figma element is above it, parented to it; the old layer is switched off');
+            old.selected = false; nl.selected = true;
+        }
+        if (lk) old.locked = true;
+        return rc;
+    }
+
+    /* ------------------------------------------------- "Update from Figma"
+     * The Figma selection was exported again (same shape as its import, with node ids). Its layers are
+     * matched to the AE layers by the link in their comment and updated IN PLACE: content (paths, paints,
+     * text, pictures, Figma effects), and transforms that are not animated. Keyframes, expressions, the
+     * user's own effects, masks, parents, timing and names stay. New Figma layers are built into the
+     * same comp, between their neighbours, in the same coordinates; layers gone from Figma are switched
+     * off and labelled red, never deleted.
+     */
+    var UPD = null;
+    function updateFromFigma(rc, doc, sel) {
+        UPD = { updated: 0, added: 0, gone: 0, live: {}, doc: doc };
+        var def = doc.comp, C = rc, i;
+        // where it goes: the precomp of that Figma frame/group (selected, or anywhere in the comp), or the comp itself
+        if (def.fid) {
+            var cand = [], all = [];
+            for (i = 0; i < sel.length; i++) cand.push(sel[i]);
+            for (i = 1; i <= rc.numLayers; i++) all.push(rc.layer(i));
+            cand = cand.concat(all);
+            for (i = 0; i < cand.length; i++) {
+                var lk = readLink(cand[i]);
+                if (lk && lk.id.split('#')[0] === def.fid && cand[i].source instanceof CompItem) { C = cand[i].source; break; }
+            }
+        }
+        var ids = {};
+        (function collect(d) {
+            for (var q = 0; q < d.layers.length; q++) {
+                var L = d.layers[q];
+                if (L.fid) ids[L.fid] = 1;
+                if (L.comp) collect(L.comp);
+            }
+        })(def);
+        for (i = 0; i < (doc.roots || []).length; i++) ids[doc.roots[i]] = 1;
+        if (def.fid) ids[def.fid] = 1;
+        UPD.ids = ids;
+        // ONE layer selected in AE that is not already linked to this Figma selection: it gets exactly what is selected
+        // in Figma (a raster becomes the vectors, a layer gets a reworked version) — the old "Replace layer"
+        // the layers selected in AE are somewhere INSIDE what is selected in Figma (a button in AE, the frame around it
+        // in Figma): each of them gets its own element from the export — by link, else by a name only one element has.
+        // Their place, size and animation stay; nothing else in the comp is touched.
+        var picked = false;
+        if (C === rc && sel.length) {
+            var tops0 = {}, found = [], fmap = {}, nested = false, okAll = true;
+            for (i = 0; i < def.layers.length; i++) if (def.layers[i].key) tops0[def.layers[i].key] = 1;
+            for (i = 0; i < sel.length && okAll; i++) {
+                var lk1 = readLink(sel[i]), hit = lk1 ? findInDoc(def, function (X) { return X.key === lk1.id; }) : [];
+                if (hit.length !== 1) { var bn = baseName(sel[i].name); hit = findInDoc(def, function (X) { return baseName(X.name) === bn; }); }
+                if (hit.length !== 1 || !hit[0].key || fmap[hit[0].key]) { okAll = false; break; }
+                if (!tops0[hit[0].key]) nested = true;
+                found.push(hit[0]); fmap[hit[0].key] = sel[i];
+            }
+            if (okAll && nested) {
+                def = { name: def.name, w: def.w, h: def.h, origin: def.origin, layers: found };
+                UPD.forceMap = fmap; UPD.noGone = true; picked = true;
+            }
+        }
+        if (!picked && C === rc && sel.length > 1) {
+            UPD.only = {}; UPD.onlyComp = rc;
+            for (i = 0; i < sel.length; i++) UPD.only[sel[i].index] = 1;
+        }
+        if (!picked && C === rc && sel.length === 1) {
+            var one = sel[0], l1 = readLink(one);
+            if (!(l1 && ids[l1.id.split('#')[0]])) {
+                var tops = [];
+                for (i = 0; i < def.layers.length; i++) if (!def.layers[i].guide) tops.push(def.layers[i]);
+                if (def.fid && !(tops.length === 1 && tops[0].fid === def.fid)) {
+                    // a frame / group selected in Figma came as its children: as one piece here
+                    var whole = { type: 'precomp', name: def.name, size: [def.w, def.h], pos: [def.w / 2, def.h / 2], anchor: [def.w / 2, def.h / 2],
+                                  scale: [100, 100], rot: 0, opacity: 100, blend: 'NORMAL', effects: [], comp: def, fid: def.fid, key: def.fid + '#0' };
+                    def = { name: def.name, w: def.w, h: def.h, origin: def.origin, layers: [whole] };
+                    tops = [whole];
+                }
+                if (tops.length === 1 && tops[0].key) UPD.force = { key: tops[0].key, lay: one };
+            }
+        }
+        syncComp(C, def, def.origin || null, doc);
+        LOG.unshift('Updated from Figma: ' + UPD.updated + ' layer(s) updated, ' + UPD.added + ' added' +
+                    (UPD.gone ? ', ' + UPD.gone + ' no longer in Figma (switched off, red label)' : '') + ' — in "' + C.name + '"');
+        if (!UPD.updated && !UPD.added) LOG.unshift('Nothing matched: select in After Effects the comp or precomp this Figma selection was imported into');
+        UPD = null;
+    }
+
+    /** export layers anywhere in def (precomps, mattes) that pass test */
+    function findInDoc(def, test) {
+        var out = [];
+        (function walk(ls) {
+            for (var q = 0; q < ls.length; q++) {
+                var X = ls[q];
+                if (!X || X.guide) continue;
+                if (test(X)) out.push(X);
+                if (X.matte && X.type !== 'bgblur') walk([X.matte.layer]);
+                if (X.comp) walk(X.comp.layers);
+            }
+        })(def.layers);
+        return out;
+    }
+
+    /** offsets a property (static or every keyframe) by d */
+    function offsetProp(p, d) {
+        if (!p || !(d[0] || d[1])) return;
+        function add(v) { var r = [v[0] + d[0], v[1] + d[1]]; if (v.length > 2) r.push(v[2]); return r; }
+        if (p.numKeys) for (var k = 1; k <= p.numKeys; k++) p.setValueAtKey(k, add(p.keyValue(k)));
+        else p.setValue(add(p.value));
+    }
+    function offsetPosition(lay, d) {
+        var T = lay.property('ADBE Transform Group'), P = T.property('ADBE Position');
+        if (P.dimensionsSeparated) {
+            var X = T.property('ADBE Position_0'), Y = T.property('ADBE Position_1');
+            var one = function (p, v) { if (!v) return; if (p.numKeys) for (var k = 1; k <= p.numKeys; k++) p.setValueAtKey(k, p.keyValue(k) + v); else p.setValue(p.value + v); };
+            one(X, d[0]); one(Y, d[1]);
+        } else offsetProp(P, d);
+    }
+    /** "Button 2", "Button 3" (AE numbering of equal names) and "* Logo" (raster mark) are "Button", "Logo" */
+    function baseName(n) { return String(n).replace(/^\*\s+/, '').replace(/\s+\d+$/, ''); }
+    function nameNumber(n) { var m = /\s(\d+)$/.exec(String(n)); return m ? +m[1] : 1; }
+    function restVal(p) { return p.numKeys ? p.keyValue(p.numKeys) : p.value; }   // where an intro animation ends
+    /** visual centre of an AE layer in comp space (rotation ignored) */
+    function restPos(lay) {
+        try {
+            var r = lay.sourceRectAtTime(lay.inPoint, false);
+            return toCompPt(lay, [r.left + r.width / 2, r.top + r.height / 2]);
+        } catch (e) { return null; }
+    }
+    /** a layer's resting transform (where its animation ends); rotation is not followed */
+    function restXf(lay) {
+        var T = lay.property('ADBE Transform Group'), P = T.property('ADBE Position');
+        var p = P.dimensionsSeparated ? [restVal(T.property('ADBE Position_0')), restVal(T.property('ADBE Position_1'))] : restVal(P);
+        return { p: p, a: restVal(T.property('ADBE Anchor Point')), s: restVal(T.property('ADBE Scale')) };
+    }
+    /** a point of the layer's own space in comp space, through its parents */
+    function toCompPt(lay, pt) {
+        var x = restXf(lay), q = [(pt[0] - x.a[0]) * x.s[0] / 100 + x.p[0], (pt[1] - x.a[1]) * x.s[1] / 100 + x.p[1]];
+        return lay.parent ? toCompPt(lay.parent, q) : q;
+    }
+    /** a comp point in the layer's own space (the space its children's positions are in) */
+    function fromCompPt(lay, P) {
+        var q = lay.parent ? fromCompPt(lay.parent, P) : P, x = restXf(lay);
+        return [(q[0] - x.p[0]) * 100 / (x.s[0] || 1e-6) + x.a[0], (q[1] - x.p[1]) * 100 / (x.s[1] || 1e-6) + x.a[1]];
+    }
+    /** how much a layer's own space is scaled in the comp (its scale times its parents') */
+    function compScale(lay) {
+        var x = restXf(lay), k = [x.s[0] / 100, x.s[1] / 100];
+        if (lay.parent) { var pk = compScale(lay.parent); k = [k[0] * pk[0], k[1] * pk[1]]; }
+        return k;
+    }
+    /** visual centre of an export layer */
+    function defCenter(L) {
+        if (!L.size || !L.anchor || !L.scale) return L.pos;
+        return [L.pos[0] + (L.size[0] / 2 - L.anchor[0]) * L.scale[0] / 100, L.pos[1] + (L.size[1] / 2 - L.anchor[1]) * L.scale[1] / 100];
+    }
+    function animated(p) { return !!p && (p.numKeys > 0 || (p.canSetExpression && p.expressionEnabled && p.expression !== '')); }
+    function unlockedDo(lay, fn) { var lk = lay.locked; if (lk) lay.locked = false; try { return fn(); } finally { if (lk) lay.locked = true; } }
+
+    /** def (export space, its (0,0) at canvas point newO) into comp C; returns the shift export → C coordinates */
+    function syncComp(C, def, newO, doc, register) {
+        doc = doc || UPD.doc;
+        var idx = {}, loose = {}, linked = 0, i, L, lay, lk;
+        for (i = 1; i <= C.numLayers; i++) {
+            lay = C.layer(i);
+            if (UPD.only && C === UPD.onlyComp && !UPD.only[lay.index]) continue;   // layers selected in AE: only those
+            lk = readLink(lay);
+            if (lk) { idx[lk.id] = { lay: lay, link: lk }; linked++; }
+
+            else if (!lay.guideLayer) { var b = baseName(lay.name); (loose[b] = loose[b] || []).push({ lay: lay, link: null, pos: restPos(lay) }); }
+        }
+        // a frame and its own background / glow carry the same Figma id: a link counts only for the same kind of layer, once
+        function keyHit(L) {
+            var e = L && L.key ? idx[L.key] : null;
+            if (!e || e.used) return null;
+            var comp = e.lay.source instanceof CompItem;
+            if ((L.type === 'precomp') !== comp && !(L.type !== 'precomp' && e.link && e.link.w)) return null;   // a precomp only for a precomp
+            return e;
+        }
+        // layers of an import made before links existed: same name (AE's "Button 2", "Button 3"… count as "Button")
+        // and the nearest place — after the shift s below is known
+        function find(L) {
+            if (!L) return null;
+            if (UPD.forceMap && L.key && UPD.forceMap[L.key]) {
+                var fm = UPD.forceMap[L.key]; delete UPD.forceMap[L.key];
+                return { lay: fm, link: readLink(fm), forced: true };
+            }
+            if (UPD.force && L.key === UPD.force.key) {
+                var fl = UPD.force.lay; UPD.force = null;
+                return { lay: fl, link: readLink(fl), forced: true };
+            }
+            var kh = keyHit(L);
+            if (kh) { kh.used = true; return kh; }
+            var list = loose[baseName(L.name)], best = null, bd = 1e12;
+            if (!list || !L.pos) return null;
+            for (var q = 0; q < list.length; q++) {
+                if (list[q].used) continue;
+                var pq = list[q].pos, lc = defCenter(L), dd = pq ? Math.pow(pq[0] - lc[0], 2) + Math.pow(pq[1] - lc[1], 2) : 1e11;
+                if (dd < bd) { bd = dd; best = list[q]; }
+            }
+            if (best) best.used = true;
+            return best;
+        }
+        // a Figma precomp that is not here as a layer, while what is inside it is (the user un-precomped it):
+        // its layers are taken out into this comp, in its coordinates — no second copy of it gets built
+        function peek(L) {
+            if (!L) return false;
+            if (keyHit(L)) return true;
+            var li = loose[baseName(L.name)];
+            return !!(li && li.length);
+        }
+        function anyInside(d) {
+            for (var q = 0; q < d.layers.length; q++) if (peek(d.layers[q]) || (d.layers[q].comp && anyInside(d.layers[q].comp))) return true;
+            return false;
+        }
+        function expand(list) {
+            var out = [];
+            for (var q = 0; q < list.length; q++) {
+                var P = list[q];
+                if (P.type === 'precomp' && P.comp && !P.rot && P.scale && P.anchor && !peek(P) && anyInside(P.comp)) {
+                    var kx = P.scale[0] / 100;
+                    for (var r = 0; r < P.comp.layers.length; r++) {
+                        var I = P.comp.layers[r];
+                        xLayer(I, kx, P.pos[0] - P.anchor[0] * kx, P.pos[1] - P.anchor[1] * kx);
+                        I.opacity = (I.opacity === undefined ? 100 : I.opacity) * (P.opacity === undefined ? 100 : P.opacity) / 100;
+                    }
+                    if (P.effects && P.effects.length) note('"' + P.name + '": un-precomped in After Effects — its Figma effects are not put back');
+                    out = out.concat(expand(P.comp.layers));
+                } else out.push(P);
+            }
+            return out;
+        }
+        var DL = expand(def.layers);
+        // where C's (0,0) is on the canvas: a matched layer's link, the comp's own link, any link — else centred like "Current"
+        var Oc = null, m, cl = readLink(C);
+        for (i = 0; i < DL.length && !Oc; i++) { m = DL[i].key && idx[DL[i].key]; if (m && m.link.o) Oc = m.link.o; }
+        if (!Oc && cl && cl.o) Oc = cl.o;
+        if (!Oc) for (var kk in idx) if (idx[kk].link.o) { Oc = idx[kk].link.o; break; }
+        var s = [(C.width - def.w) / 2, (C.height - def.h) / 2];
+        if (Oc && newO) s = [newO[0] - Oc[0], newO[1] - Oc[1]];
+        // inside a precomp (its group may have moved or grown) and in an import without links: line up by the
+        // layers that are still there — the median of where they were put vs where the export has them now
+        var lined = false, k = 1;
+        if (register || !Oc) {
+            // the layers that are certainly the same (by link, or the only AE layer of that name) give the offset AND
+            // the scale: a precomp the user rescaled or un-precomped from a 2× picture keeps everything at 2×
+            var A = [], D = [];
+            for (i = 0; i < DL.length; i++) {
+                L = DL[i];
+                if (!L.pos || L.guide) continue;
+                var e2 = keyHit(L);
+                if (!e2) { var lb = loose[baseName(L.name)]; if (lb && lb.length === 1) e2 = lb[0]; }
+                var ap = e2 ? restPos(e2.lay) : null;
+                if (ap) { A.push(ap); D.push(defCenter(L)); }
+            }
+            var med = function (a) { a.sort(function (x, y) { return x - y; }); return a[Math.floor(a.length / 2)]; };
+            if (A.length >= 2) {
+                var ks = [];
+                for (var a1 = 0; a1 < A.length; a1++) for (var a2 = a1 + 1; a2 < A.length; a2++) {
+                    var dd = Math.sqrt(Math.pow(D[a1][0] - D[a2][0], 2) + Math.pow(D[a1][1] - D[a2][1], 2));
+                    if (dd > 4) ks.push(Math.sqrt(Math.pow(A[a1][0] - A[a2][0], 2) + Math.pow(A[a1][1] - A[a2][1], 2)) / dd);
+                }
+                if (ks.length) { k = med(ks); if (Math.abs(k - 1) < 0.02) k = 1; }
+            }
+            if (A.length) {
+                var sx = [], sy = [];
+                for (i = 0; i < A.length; i++) { sx.push(A[i][0] - k * D[i][0]); sy.push(A[i][1] - k * D[i][1]); }
+                s = [med(sx), med(sy)]; lined = true;
+            }
+        }
+        if (!lined && !Oc) {
+            // no links: try every same-name AE layer as the partner of every export layer; the shift that puts the
+            // most export layers onto a same-name AE layer wins (a moved element can't fool it, a grid of equal buttons can't either)
+            var bestS = null, bestN = 0, bestR = 1e9;
+            for (i = 0; i < DL.length; i++) {
+                L = DL[i];
+                var li = L.pos && loose[baseName(L.name)];
+                if (!li || L.type === 'text') continue;
+                for (var c1 = 0; c1 < li.length; c1++) {
+                    if (!li[c1].pos) continue;
+                    var lc1 = defCenter(L), tx = li[c1].pos[0] - lc1[0], ty = li[c1].pos[1] - lc1[1], hits = 0, rank = 0;
+                    for (var j = 0; j < DL.length; j++) {
+                        var L2 = DL[j], l2 = L2.pos && loose[baseName(L2.name)];
+                        if (!l2) continue;
+                        for (var c2 = 0; c2 < l2.length; c2++) {
+                            var p2 = l2[c2].pos;
+                            var lc2 = defCenter(L2);
+                            if (p2 && Math.abs(p2[0] - lc2[0] - tx) < 2 && Math.abs(p2[1] - lc2[1] - ty) < 2) { hits++; rank += nameNumber(l2[c2].lay.name); break; }
+                        }
+                    }
+                    // a grid of equal buttons fits in every row: then the lower AE numbers win ("Button", "Button 2" before "Button 21")
+                    if (hits > bestN || (hits === bestN && hits && rank < bestR)) { bestN = hits; bestS = [tx, ty]; bestR = rank; }
+                }
+            }
+            if (bestS) { s = bestS; lined = true; }
+        }
+        if (lined && newO) Oc = [newO[0] - s[0], newO[1] - s[1]];
+        if (!Oc) Oc = newO ? [newO[0] - s[0], newO[1] - s[1]] : null;
+        for (i = 0; i < DL.length; i++) xLayer(DL[i], k, s[0], s[1]);
+
+        var ctx = { nulls: {}, kids: [], origin: Oc }, keys = {}, below = null, pending = [];
+        groupCtx.push(ctx);
+        try {
+            for (i = 0; i < DL.length; i++) {
+                L = DL[i];
+                if (L.guide) continue;
+                if (L.key) keys[L.key] = 1;
+                if (L.matte) { var ml = L.type === 'bgblur' ? L.matte : L.matte.layer; if (ml && ml.key) keys[ml.key] = 1; }
+                var ex = find(L);
+                if (ex) {
+                    updateLayer(C, ex, L, doc, Oc);
+                    if (L.type === 'null') ctx.nulls[L.gid] = ex.lay;
+                    if (L.matte && L.type !== 'bgblur' && L.matte.layer) { var em = find(L.matte.layer); if (em) updateLayer(C, em, L.matte.layer, doc, Oc); }
+                    below = ex.lay;
+                    for (var p = 0; p < pending.length; p++) unlockedDo(pending[p], function () { pending[p].moveAfter(below); });
+                    copyTiming(pending, below);
+                    pending = [];
+                } else {
+                    var n0 = C.numLayers, nl = buildLayer(C, L, doc);
+                    if (!nl) continue;
+                    UPD.added++;
+                    UPD.live[nl.id] = 1;
+                    var made = [];                                        // the layer and its matte, top-most first
+                    for (var t = 1; t <= C.numLayers - n0; t++) made.push(C.layer(t));
+                    for (var q = made.length - 1; q >= 0; q--) unlockedDo(made[q], function () {
+                        if (below) made[q].moveBefore(q === made.length - 1 ? below : made[q + 1]);
+                    });
+                    if (below) { copyTiming(made, below); below = made[0]; }
+                    else pending = pending.concat(made.slice().reverse());   // nothing matched under it yet: under the next match, bottom first
+                    if (L.type === 'null') ctx.nulls[L.gid] = nl;
+                }
+            }
+        } finally { groupCtx.pop(); }
+        for (var k = 0; k < ctx.kids.length; k++) {
+            var kid = ctx.kids[k][0], nul = ctx.nulls[ctx.kids[k][1]];
+            if (nul && kid.index !== nul.index) try { unlockedDo(kid, function () { kid.parent = nul; }); } catch (e) {}
+        }
+        // gone from Figma: switched off, red — only layers of nodes whose parent was exported now
+        if (linked && !UPD.noGone) for (var key in idx) {
+            var g = idx[key];
+            if (keys[key] || UPD.live[g.lay.id] || !g.link.pa || !UPD.ids[g.link.pa] || !g.lay.enabled) continue;
+            unlockedDo(g.lay, function () { g.lay.enabled = false; g.lay.label = 1; });
+            UPD.gone++;
+        }
+        return s;
+    }
+
+    /** one matched layer: new content and Figma look, the user's animation and additions kept */
+    function updateLayer(C, ex, L, doc, Oc) {
+        var lay = ex.lay;
+        if (UPD.live[lay.id]) return;
+        UPD.live[lay.id] = 1;
+        if (L.type === 'bgblur') return;                                  // the blur layer: kept as it is
+        var isComp = lay.source instanceof CompItem, isFoot = lay.source instanceof FootageItem;
+        if (ex.link && ex.link.w && isComp && L.type === 'precomp' && L.comp) {
+            // swapped in before (a picture that became vectors): the vectors are updated in place, inside — the
+            // animation the user made in there stays; the layer itself keeps its own transforms
+            var inner = elementComp(lay.source);
+            syncComp(inner, L.comp, null, null, true);
+            unlockedDo(lay, function () {
+                var pw = lay.transform.position.value;
+                setLink(lay, { id: L.key, pa: L.pfid, o: Oc, p: [pw[0], pw[1]], fx: ex.link.fx || 0, w: 1 });
+            });
+            UPD.updated++;
+            return;
+        }
+        var fits = (L.type === 'shape' && lay instanceof ShapeLayer) || (L.type === 'text' && lay instanceof TextLayer) ||
+                   (L.type === 'image' && isFoot) || (L.type === 'precomp' && isComp && !(ex.link && ex.link.w)) ||
+                   (L.type === 'null' && lay.nullLayer);
+        if (!fits) {
+            // a picture in AE, vectors in Figma (or the other way): the layer keeps everything of its own and gets the
+            // Figma element as its new source, fitted to the old pixels — the "Replace layer" swap
+            if ((isComp || isFoot) && L.size && L.pos && L.anchor) {
+                unlockedDo(lay, function () { swapIn(C, lay, L, ex, Oc); });
+                UPD.updated++;
+            } else note('"' + lay.name + '": a ' + L.type + ' in Figma, another kind of layer in After Effects — left as it is');
+            return;
+        }
+        var T = lay.property('ADBE Transform Group');
+        unlockedDo(lay, function () {
+            var anchorFix = null;
+            if (L.type === 'shape' && lay instanceof ShapeLayer) {
+                var root = lay.property('ADBE Root Vectors Group');
+                for (var r = root.numProperties; r >= 1; r--) root.property(r).remove();
+                buildShape(C, L, lay);
+            } else if (L.type === 'text' && lay instanceof TextLayer) {
+                var tmp = buildText(C, L), sp = lay.property('ADBE Text Properties').property('ADBE Text Document');
+                if (!animated(sp)) sp.setValue(tmp.property('ADBE Text Properties').property('ADBE Text Document').value);
+                try { setFontLine(lay, String(tmp.comment).indexOf(FONT_TAG) === 0 ? commentLines(tmp.comment)[0] : null); } catch (e0) {}
+                tmp.remove();
+            } else if (L.type === 'image' && lay.source) {
+                var tl = buildImage(C, L), src = tl.source;
+                tl.remove();
+                if (lay.source !== src) lay.replaceSource(src, false);
+            } else if (L.type === 'precomp' && lay.source instanceof CompItem) {
+                if (L.pos && L.anchor) {
+                    var innerO = Oc ? [Oc[0] + L.pos[0] - L.anchor[0], Oc[1] + L.pos[1] - L.anchor[1]] : null;
+                    var si = growFor(lay.source, L.comp, innerO, L);
+                    anchorFix = [L.anchor[0] + si[0], L.anchor[1] + si[1]];
+                }
+            } else if (L.type !== 'null') {
+                note('"' + lay.name + '": the layer type changed in Figma — only its position was updated');
+            }
+            var X = xformOf(L);
+            if (anchorFix) X.anchor = anchorFix;
+            var A = T.property('ADBE Anchor Point'), P = T.property('ADBE Position');
+            if (ex.forced) {
+                // the one layer the user picked: it stays where and how it is, only what it shows changes
+                if (anchorFix && !animated(A)) A.setValue(anchorFix);
+            } else {
+            if (!animated(A)) A.setValue(X.anchor);
+            if (P.dimensionsSeparated || animated(P)) {
+                // animated: every key moves by how far the element moved in Figma — measured where the animation
+                // comes to rest against where Figma has the element now (a few px of text-rendering noise are ignored)
+                // animated: every key moves by as much as the element moved in Figma since the last import/update
+                // (known only when that was in this same comp — not after an Un-Precomp, not for older imports)
+                var was = ex.link && ex.link.f && +ex.link.c === C.id ? ex.link.f : null, want = defCenter(L);
+                if (was && want) {
+                    var mv = [want[0] - was[0], want[1] - was[1]];
+                    if (lay.parent) { var pk0 = compScale(lay.parent); mv = [mv[0] / (pk0[0] || 1e-6), mv[1] / (pk0[1] || 1e-6)]; }
+                    if (Math.abs(mv[0]) > 0.5 || Math.abs(mv[1]) > 0.5) offsetPosition(lay, mv);
+                }
+            } else P.setValue(lay.parent ? fromCompPt(lay.parent, X.pos) : X.pos);    // a parented layer: in its parent's space
+            if (!animated(T.property('ADBE Rotate Z')) && !lay.parent) T.property('ADBE Rotate Z').setValue(L.rot);
+            if (!animated(T.property('ADBE Scale'))) {
+                var sc1 = X.scale;
+                if (lay.parent) { var pk1 = compScale(lay.parent); sc1 = [sc1[0] / (pk1[0] || 1e-6), sc1[1] / (pk1[1] || 1e-6)]; }
+                T.property('ADBE Scale').setValue(sc1);
+            }
+            if (!animated(T.property('ADBE Opacity'))) T.property('ADBE Opacity').setValue(clamp(L.opacity, 0, 100));
+            try { lay.blendingMode = layerBlend(L.blend); } catch (e1) {}
+            }
+            // no link (an older import): the effects at the top are taken as Figma's, as many as Figma has now
+            var nfx = refreshFigmaEffects(lay, L, ex.link ? ex.link.fx : -1);
+            if (L.key) linkLayer(lay, L, Oc || (ex.link && ex.link.o), nfx);
+        });
+        UPD.updated++;
+    }
+
+    /** the Figma element L, in a comp of its own size, becomes the source of lay (fitted to its old pixels) */
+    function swapIn(C, lay, L, ex, Oc) {
+        var built;
+        if (L.type === 'precomp' && L.comp && !(L.effects && L.effects.length) && L.opacity >= 100 && !realBlendAE(L.blend) && !L.rot && !L.matte) {
+            // the element's own comp is the new source (no comp around it): one level to open, not two
+            L.comp.origin = [0, 0];                                         // links inside: the next update matches by id
+            built = buildComp(L.comp, UPD.doc, false);
+        } else {
+            shiftLayer(L, L.anchor[0] - L.pos[0], L.anchor[1] - L.pos[1]);      // its box at (0, 0) of the new comp
+            L.scale = [100, 100];
+            var def = { name: L.name, w: Math.max(1, Math.ceil(L.size[0])), h: Math.max(1, Math.ceil(L.size[1])), layers: [L] };
+            built = buildComp(def, UPD.doc, false);
+            built.comment = WRAP_TAG;
+        }
+        replaceLayer(C, lay, built);
+        lay.selected = false;
+        var p = lay.transform.position.value;
+        setLink(lay, { id: L.key, pa: L.pfid, o: Oc, p: [p[0], p[1]], fx: ex.link ? ex.link.fx : 0, w: 1 });
+    }
+
+    /** comps that only hold the element (fitting it to the old picture's pixels) are marked, and skipped on the way in */
+    var WRAP_TAG = 'fig2ae:wrap';
+    function elementComp(c) {
+        var marked = false;
+        for (var d = 0; d < 4; d++) {
+            var one = c.numLayers === 1 && c.layer(1).source instanceof CompItem;
+            if (String(c.comment).indexOf(WRAP_TAG) === 0) { marked = true; if (!one) break; c = c.layer(1).source; continue; }
+            // swapped by an earlier build (no marks): picture-size wrapper → element-size wrapper → the element
+            if (!marked && d < 2 && one && !readLink(c.layer(1))) { c = c.layer(1).source; continue; }
+            break;
+        }
+        return c;
+    }
+    function realBlendAE(b) { return !!b && b !== 'NORMAL' && b !== 'PASS_THROUGH'; }
+
+    /** new layers start and end like the layer next to them */
+    function copyTiming(list, src) {
+        for (var i = 0; i < list.length; i++) {
+            var l = list[i];
+            unlockedDo(l, function () { l.startTime = src.startTime; l.inPoint = src.inPoint; l.outPoint = src.outPoint; });
+        }
+    }
+
+    /** a precomp matched: sync its comp, grow it when the Figma group grew; returns the shift new → old inner coordinates */
+    function growFor(pc, def, innerO, L) {
+        var s = syncComp(pc, def, innerO, null, true);
+        var x0 = s[0], y0 = s[1], x1 = s[0] + def.w, y1 = s[1] + def.h;
+        var ex = -x0 > 0.5 ? Math.ceil(-x0) : 0, ey = -y0 > 0.5 ? Math.ceil(-y0) : 0;   // rounding noise is not growth
+        if (ex || ey) {
+            // grew up / left: everything inside moves right / down by as much, the comp's canvas origin with it
+            for (var i = 1; i <= pc.numLayers; i++) {
+                var l = pc.layer(i);
+                if (l.parent) continue;
+                unlockedDo(l, function () { offsetPosition(l, [ex, ey]); });
+                var lk = readLink(l);
+                if (lk && lk.o) { lk.o = [lk.o[0] - ex, lk.o[1] - ey]; if (lk.p) lk.p = [lk.p[0] + ex, lk.p[1] + ey]; setLink(l, lk); }
+            }
+            var cl = readLink(pc);
+            if (cl && cl.o) { cl.o = [cl.o[0] - ex, cl.o[1] - ey]; setLink(pc, cl); }
+        }
+        var w = Math.ceil(Math.max(pc.width + ex, x1 + ex) - 0.5), h = Math.ceil(Math.max(pc.height + ey, y1 + ey) - 0.5);
+        if (w !== pc.width || h !== pc.height) { pc.width = Math.min(30000, w); pc.height = Math.min(30000, h); }
+        return [s[0] + ex, s[1] + ey];
+    }
+
+    /** the effects the import put at the top of the stack are replaced by Figma's current ones; the user's own stay below */
+    function refreshFigmaEffects(lay, L, k) {
+        var fx = lay.property('ADBE Effect Parade'), guess = k < 0, n0 = fx.numProperties;
+        k = guess ? 0 : Math.min(k || 0, n0);
+        for (var r = k; r >= 1; r--) fx.property(r).remove();
+        var before = fx.numProperties;
+        if (L.fx) addGradientFx(lay, L);
+        if (L.shear) addShear(lay, L);
+        var list = L.effects || [];
+        for (var i = 0; i < list.length; i++) addEffect(lay, list[i]);
+        var added = fx.numProperties - before;
+        if (guess) for (var g = Math.min(added, n0); g >= 1; g--) { fx.property(g).remove(); before--; }
+        for (var j = 0; j < added; j++) try { fx.property(before + 1 + j).moveTo(1 + j); } catch (e) {}
+        return added;
+    }
+    function setFontLine(lay, line) {
+        var keep = line ? [line] : [], ls = commentLines(lay.comment);
+        for (var i = 0; i < ls.length; i++) if (ls[i] && ls[i].indexOf(FONT_TAG) !== 0) keep.push(ls[i]);
+        lay.comment = keep.join('\r');
+    }
+
     /** the first k layers of c start at time at (new layers of a "Current" import begin at the playhead) */
     function startAt(c, k, at) {
         for (var t = 1; t <= k; t++) {
@@ -354,7 +962,7 @@
 
     /** builds def.layers into comp c (a new comp, or the active one in "Current" mode) */
     function fillComp(c, def, doc) {
-        var ctx = { nulls: {}, kids: [] }, stop = null;
+        var ctx = { nulls: {}, kids: [], origin: def.origin || null }, stop = null;
         groupCtx.push(ctx);
         // layers[0] is the bottom-most; each new AE layer lands on top
         for (var i = 0; i < def.layers.length && !stop; i++) {
@@ -413,6 +1021,17 @@
         else if (L.matte) shiftLayer(L.matte.layer, dx, dy);
     }
 
+    /** an export layer (and what travels with it) from its space into k × space + t (scale k, then move) */
+    function xLayer(L, k, tx, ty) {
+        if (!L) return;
+        if (k === 1) return shiftLayer(L, tx, ty);
+        if (L.pos) L.pos = [L.pos[0] * k + tx, L.pos[1] * k + ty];
+        if (L.scale) L.scale = [L.scale[0] * k, L.scale[1] * k];
+        if (L.text && L.text.m) { var m = L.text.m; L.text.m = [m[0] * k, m[1] * k, m[2] * k, m[3] * k, m[4] * k + tx, m[5] * k + ty]; }
+        if (L.type === 'bgblur') xLayer(L.matte, k, tx, ty);
+        else if (L.matte) xLayer(L.matte.layer, k, tx, ty);
+    }
+
     /** panel settings: the server passes them as F2A_OPTS; a file run reads what the panel saved */
     function readOpts(doc) {
         var o = $.global.F2A_OPTS;
@@ -425,6 +1044,83 @@
     }
 
     /** a layer and its matte are one unit: Stop/Cancel never lands between them (an unmatted picture or blur) */
+    /** anchor / position / scale of the AE layer for export layer L (after its content is built: text uses lastInk) */
+    function xformOf(L) {
+        var anchor = L.anchor, pos = L.pos, scale = L.scale;
+        if (L.type === 'image') {
+            anchor = [L.png.w / 2, L.png.h / 2];                 // layer space = source pixels
+            scale = [scale[0] / L.png.scale, scale[1] / L.png.scale];
+        } else if (L.type === 'text' && lastInk) {
+            anchor = lastInk.anchor; pos = lastInk.pos;
+        }
+        lastInk = null;
+        return { anchor: anchor, pos: pos, scale: scale };
+    }
+
+    /* ---------------------------------------------- link to Figma ("Update from Figma")
+     * A line in the layer comment (and in the comment of a comp built from a Figma node):
+     *   fig2ae:link id=<node id>#<n>&pa=<parent node id>&o=<x,y>&p=<x,y>&fx=<k>
+     * id   the Figma node + which of its layers (a node can make several: background, stroke…)
+     * o    where (0,0) of the layer's comp is on the Figma canvas — new layers of an update land in place
+     * p    the position the import set — an animated position is moved by what changed in Figma
+     * fx   how many effects at the top of the stack came from Figma (the user's own follow them)
+     */
+    var LINK_TAG = 'fig2ae:link ';
+    function commentLines(s) { return String(s || '').split(/\r\n|\r|\n/); }
+    function readLink(target) {
+        var ls = commentLines(target.comment);
+        for (var i = 0; i < ls.length; i++) {
+            if (ls[i].indexOf(LINK_TAG) !== 0) continue;
+            var o = {}, kv = ls[i].substring(LINK_TAG.length).split('&');
+            for (var k = 0; k < kv.length; k++) {
+                var e = kv[k].indexOf('=');
+                if (e > 0) o[kv[k].substring(0, e)] = decodeURIComponent(kv[k].substring(e + 1));
+            }
+            if (o.o) { var a = o.o.split(','); o.o = [+a[0], +a[1]]; }
+            if (o.p) { var b = o.p.split(','); o.p = [+b[0], +b[1]]; }
+            if (o.f) { var b2 = o.f.split(','); o.f = [+b2[0], +b2[1]]; }
+            o.fx = +(o.fx || 0);
+            return o.id ? o : null;
+        }
+        return null;
+    }
+    function setLink(target, o) {
+        var parts = [];
+        for (var k in o) {
+            var v = o[k];
+            if (v === undefined || v === null) continue;
+            if (v instanceof Array) v = v[0] + ',' + v[1];
+            parts.push(k + '=' + encodeURIComponent(v));
+        }
+        var keep = [], ls = commentLines(target.comment);
+        for (var i = 0; i < ls.length; i++) if (ls[i] && ls[i].indexOf(LINK_TAG) !== 0) keep.push(ls[i]);
+        keep.push(LINK_TAG + parts.join('&'));
+        var lk = target.locked;
+        if (lk) target.locked = false;
+        target.comment = keep.join('\r');
+        if (lk) target.locked = true;
+    }
+    function linkLayer(lay, L, origin, figmaFx) {
+        var p = lay.transform.position.value;
+        if (figmaFx === undefined) figmaFx = lay.property('ADBE Effect Parade').numProperties;   // at import every effect is Figma's
+        var fc = defCenter(L);
+        // f: where Figma had it (its centre, in this comp) and c: which comp — an animated layer later moves only by
+        // what changed in Figma, never back to where Figma has it (the user may have moved it on purpose)
+        setLink(lay, { id: L.key, pa: L.pfid, o: origin, p: [p[0], p[1]], fx: figmaFx, f: fc ? [fc[0], fc[1]] : null, c: lay.containingComp.id });
+    }
+    /** "<node id>#<n>": the n-th layer a node made in this comp, in export order (mattes right after their layer) */
+    function assignKeys(def) {
+        var count = {};
+        function one(L) {
+            if (!L) return;
+            if (L.fid) { var n = count[L.fid] || 0; count[L.fid] = n + 1; L.key = L.fid + '#' + n; }
+            if (L.type === 'bgblur') one(L.matte);
+            else if (L.matte) one(L.matte.layer);
+            if (L.comp) assignKeys(L.comp);
+        }
+        for (var i = 0; i < def.layers.length; i++) one(def.layers[i]);
+    }
+
     function withMatte(fn) {
         if (PROG) PROG.hold++;
         try { return fn(); } finally { if (PROG) PROG.hold--; }
@@ -445,7 +1141,10 @@
         else if (L.type === 'image') lay = buildImage(c, L);
         else if (L.type === 'precomp') {
             // Stop inside a precomp: the part built so far still goes into place, then the import unwinds
+            var pctx = groupCtx[groupCtx.length - 1];
+            if (pctx && pctx.origin && L.pos && L.anchor) L.comp.origin = [pctx.origin[0] + L.pos[0] - L.anchor[0], pctx.origin[1] + L.pos[1] - L.anchor[1]];
             var pc = newComp(L.comp, doc, false);
+            if (L.key && L.comp.origin) setLink(pc, { id: L.key, o: L.comp.origin });
             try { fillComp(pc, L.comp, doc); } catch (e) { if (e !== CANCEL) throw e; pending = e; }
             lay = c.layers.add(pc);
         }
@@ -457,18 +1156,11 @@
             if (L.type === 'null') ctx.nulls[L.gid] = lay;
             if (L.group) ctx.kids.push([lay, L.group]);
         }
-        var anchor = L.anchor, pos = L.pos, scale = L.scale;
-        if (L.type === 'image') {
-            anchor = [L.png.w / 2, L.png.h / 2];                 // layer space = source pixels
-            scale = [scale[0] / L.png.scale, scale[1] / L.png.scale];
-        } else if (L.type === 'text' && lastInk) {
-            anchor = lastInk.anchor; pos = lastInk.pos;
-        }
-        lastInk = null;
-        lay.transform.anchorPoint.setValue(anchor);
-        lay.transform.position.setValue(pos);
+        var X = xformOf(L);
+        lay.transform.anchorPoint.setValue(X.anchor);
+        lay.transform.position.setValue(X.pos);
         lay.transform.rotation.setValue(L.rot);
-        lay.transform.scale.setValue(scale);
+        lay.transform.scale.setValue(X.scale);
         lay.transform.opacity.setValue(clamp(L.opacity, 0, 100));
         lay.blendingMode = layerBlend(L.blend);
         if (L.hidden) lay.enabled = false;
@@ -483,6 +1175,7 @@
             if (m) setMatte(lay, m, L.matte.mode);
         }
         if (L.guide) { lay.guideLayer = true; lay.comment = REF_TAG; }   // reference frame: visible in the viewer, never rendered
+        else if (L.key && ctx) linkLayer(lay, L, ctx.origin);       // origin unknown (older comp): linked all the same
         if (L.locked) lay.locked = true;    // last: a locked layer rejects edits
         if (pending) throw pending;
         return lay;
@@ -572,8 +1265,8 @@
         COLOR_DODGE: 11, LINEAR_DODGE: 12, OVERLAY: 15, SOFT_LIGHT: 16, HARD_LIGHT: 17, DIFFERENCE: 23,
         EXCLUSION: 24, HUE: 26, SATURATION: 27, COLOR: 28, LUMINOSITY: 29 };
 
-    function buildShape(c, L) {
-        var lay = c.layers.addShape();
+    function buildShape(c, L, into) {
+        var lay = into || c.layers.addShape();
         // AE draws the FIRST group on top -> add the top-most paint first
         for (var gi = L.groups.length - 1; gi >= 0; gi--) {
             var Gr = L.groups[gi], P = Gr.paint;
@@ -754,7 +1447,7 @@
 
     /** shape gradient colours are not scriptable; an .ffx preset is (see geom.jsx) */
     function applyGradientColors(c, lay, gfill, stops, gIndex, iIndex) {
-        var file = new File(Folder.temp.fsName + '/fig2ae_grad_' + (++gradSeq) + '.ffx');
+        var file = new File(Folder.temp.fsName + '/fig2ae_grad_' + RUN_ID + '_' + (++gradSeq) + '.ffx');  // AE caches presets by path: never reuse a name
         writeBinary(file, G.gradientFfx(stops, gIndex - 1, iIndex - 1));
         try {
             if (SCRATCH || !openedComps[c.id]) { c.openInViewer(); openedComps[c.id] = true; }  // presets apply to the active comp
@@ -765,6 +1458,11 @@
             gfill.selected = true;
             var before = lay.property('ADBE Root Vectors Group').numProperties;
             lay.applyPreset(file);
+            // a property left selected here would catch the NEXT preset (it lands on the stale selection, the
+            // real target keeps AE's default white→black gradient): clear everything we touched
+            try { gfill.selected = false; } catch (e3) {}
+            var props2 = c.selectedProperties;
+            for (var k = 0; k < props2.length; k++) try { props2[k].selected = false; } catch (e5) {}
             lay.selected = false;
             if (lay.property('ADBE Root Vectors Group').numProperties !== before) {
                 note('Layer "' + lay.name + '": the gradient preset landed in a new group — check the colours');
@@ -772,7 +1470,7 @@
         } catch (e) {
             note('Layer "' + lay.name + '": could not apply the gradient colours (' + e + ')');
         } finally {
-            try { file.remove(); } catch (e2) {}
+            gradFiles.push(file);  // deleted at the end: AE may still read it after applyPreset returns
             showScratch();
         }
     }
