@@ -183,14 +183,18 @@
   </div>
 </div>
 
+<div id="consent"></div>
 <div id="log"></div>
 <div class="foot">
-  <span class="foot-l"><span>v0.4.14</span>
+  <span class="foot-l"><span>v0.4.15</span>
     <button class="logbtn" id="logBtn" title="Copy the diagnostic log">
       <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg><span id="logBtnText">Log</span>
     </button>
     <button class="logbtn" id="checkUpd" title="Check for updates: installs the new Fig2AE version (After Effects side too) and reloads this window into it — no need to close the plugin or restart After Effects">
       <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg><span id="checkUpdText">Updates</span>
+    </button>
+    <button class="logbtn" id="reportBtn" title="Something went badly wrong? Send this one report to the developer, marked to be looked at first">
+      <svg viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg><span id="reportText">Report</span>
     </button></span>
   <span id="mode"></span>
 </div>
@@ -350,10 +354,51 @@
     else if (aeVersion && newerThan(aeVersion, VERSION)) f.unshift('v' + aeVersion + ' installed — press Updates');
     $('mode').textContent = f.join(' · ');
   }
+  /* ---------- once: may anonymous logs be sent? (saved in the AE settings; the AE panel has the same switch) */
+  function askLogs() {
+    var box = $('consent');
+    if (!ae || ae.logsAsked !== false) { box.innerHTML = ''; return; }
+    if (box.innerHTML) return;
+    box.innerHTML = call('info', '<b>Help make Fig2AE better?</b><br>After each import a short anonymous report goes to the developer: ' +
+      'plugin and AE versions, OS, settings, time, errors and warnings (they can contain layer and font names). ' +
+      'Never the design, pictures, texts or file paths. You can change this any time in the Fig2AE panel in AE.' +
+      '<div class="askrow"><button class="askbtn pri" id="logsYes">Send anonymous logs</button><button class="askbtn" id="logsNo">No, thanks</button></div>');
+    function answer(v) {
+      post('/settings/logs', { sendLogs: v }).then(function (r) {
+        if (r && r.ok) { ae = r.settings; box.innerHTML = ''; addLog('settings', 'anonymous logs ' + (v ? 'on' : 'off')); }
+      }, function () { box.innerHTML = ''; });
+    }
+    $('logsYes').onclick = function () { answer(true); };
+    $('logsNo').onclick = function () { answer(false); };
+  }
+  /* ---------- "Report a problem": one report marked as a complaint, sent through the Fig2AE server in AE */
+  $('reportBtn').onclick = function () {
+    var box = $('consent');
+    box.innerHTML = call('info', '<b>Report a problem</b><br>What went wrong? (what you selected, what you expected, what you got)' +
+      '<textarea id="repNote" rows="4" style="width:100%;margin-top:6px;box-sizing:border-box;background:rgba(255,255,255,.06);color:inherit;border:1px solid rgba(255,255,255,.15);border-radius:5px;font:inherit;font-size:12px;padding:6px"></textarea>' +
+      '<span style="opacity:.75">Goes with it: the last import (errors, warnings, timings), the recent events of the plugin and of AE, versions and settings. ' +
+      'No design, pictures or file paths. It is sent even with the anonymous logs off — only this once.</span>' +
+      '<div class="askrow"><button class="askbtn pri" id="repSend">Send report</button><button class="askbtn" id="repCancel">Cancel</button></div>');
+    $('repNote').focus();
+    $('repCancel').onclick = function () { box.innerHTML = ''; };
+    $('repSend').onclick = function () {
+      var note = $('repNote').value;
+      $('repSend').disabled = true; $('repSend').textContent = 'Sending…';
+      var lines = LOGBUF.slice(-60).map(function (e) { return e.t + ' ' + e.kind + ' ' + e.msg + (e.data ? ' ' + String(typeof e.data === 'string' ? e.data : JSON.stringify(e.data)).slice(0, 400) : ''); });
+      addLog('report', 'problem report sent');
+      post('/report', { note: note, figmaLog: lines }).then(function (r) {
+        box.innerHTML = r && r.ok ? call('ok', 'Report sent — thank you. It will be looked at first.')
+                                  : call('e', 'Could not send the report (no internet?). The <b>Log</b> button copies the same log — send it by hand.');
+      }, function () {
+        box.innerHTML = call('e', 'After Effects is not reachable — open AE with the Fig2AE panel, or send the log from the <b>Log</b> button by hand.');
+      });
+    };
+  };
+
   var aeWas;
   function refreshAE() {
     return getAE().then(function (s) {
-      ae = s; showAE();
+      ae = s; showAE(); askLogs();
       if (!!s !== aeWas) { addLog('ae', s ? 'After Effects connected' : 'After Effects not reachable', s || undefined); aeWas = !!s; }
     });
   }

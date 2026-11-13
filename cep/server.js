@@ -12,9 +12,10 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.14';
+var VERSION = '0.4.15';
 var updater = require(path.join(__dirname, 'updater.js'));
 var fonts = require(path.join(__dirname, 'fonts.js'));
+var telemetry = require(path.join(__dirname, 'telemetry.js'));
 
 var PORT = 7251;
 var BUSY = 'EvalScript error.';
@@ -28,9 +29,12 @@ var BUSY = 'EvalScript error.';
  *   precompGroups every Figma group/frame becomes a precomp (off: a null parents its layers)
  *   groupNulls    a flattened group gets a null that parents its layers
  *   autoUpdate    install new GitHub releases by itself (updater.js)
+ *   sendLogs      send an anonymous report after each import (telemetry.js); logsAsked: the user was asked once
+ *   installId     random id of this install (only made when sendLogs is turned on)
  */
 var DEFAULTS = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true,
-                 unprecompTrim: false, unprecompSelect: true, unprecompExtend: false };   // Un-Precomp: layers keep the in/out of the precomp layer (panel gear)
+                 unprecompTrim: false, unprecompSelect: true, unprecompExtend: false,
+                 sendLogs: false, logsAsked: false, installId: '' };   // Un-Precomp: layers keep the in/out of the precomp layer (panel gear)
 function settingsDir() {
   return process.platform === 'win32' ? path.join(process.env.APPDATA || os.homedir(), 'Fig2AE')
                                       : path.join(os.homedir(), 'Library', 'Application Support', 'Fig2AE');
@@ -47,6 +51,8 @@ function writeSettings(obj, file) {
   file = file || path.join(settingsDir(), 'settings.json');
   var cur = readSettings(file), k;
   for (k in DEFAULTS) if (obj && k in obj && typeof obj[k] === typeof DEFAULTS[k]) cur[k] = obj[k];
+  if (obj && typeof obj.sendLogs === 'boolean') cur.logsAsked = true;     // answered, here or in the Figma plugin
+  if (cur.sendLogs && !cur.installId) cur.installId = require('crypto').randomBytes(12).toString('hex');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(cur, null, 2));
   return cur;
@@ -169,6 +175,7 @@ function start(evalHost, opts) {
           logEvent(r.ok ? 'import' : (r.cancelled ? 'import' : 'error'),
                    r.ok ? 'imported "' + r.comp + '" (' + r.mode + ', ' + r.secs.toFixed(1) + ' s)' : (r.cancelled ? 'import cancelled by the user' : 'import failed: ' + r.error),
                    { settings: set, aeLog: r.log, figmaWarnings: doc.warnings || [], file: file, raw: r.ok || r.cancelled ? undefined : String(out).slice(0, 2000) });
+          if (!opts.dir) telemetry.send(telemetry.importReport(VERSION, readSettings(settingsFile), r, doc, out), readSettings(settingsFile));
           return r;
         }
         if (waited === 0) logEvent('import', 'After Effects is busy (dialog open?) — waiting');
@@ -221,6 +228,38 @@ function start(evalHost, opts) {
       var pr = null;
       try { pr = JSON.parse(fs.readFileSync(path.join(settingsDir(), 'progress.json'), 'utf8')); } catch (e) {}
       send(res, 200, { ok: true, progress: pr });
+      return;
+    }
+    // "Report a problem" in the Figma plugin: one report, sent right now (the user asked for it), marked as a complaint
+    if (req.method === 'POST' && /^\/report\b/.test(req.url)) {
+      var rb = [], rl = 0;
+      req.on('data', function (c) { rl += c.length; if (rl > 200000) req.destroy(); else rb.push(c); });
+      req.on('end', function () {
+        var v = null;
+        try { v = JSON.parse(Buffer.concat(rb).toString('utf8')); } catch (e) {}
+        if (!v) { send(res, 400, { ok: false, error: 'bad request' }); return; }
+        var set = readSettings(settingsFile);
+        if (!set.installId) set = writeSettings({ installId: require('crypto').randomBytes(12).toString('hex') }, settingsFile);
+        var last = null;
+        try { last = JSON.parse(fs.readFileSync(path.join(settingsDir(), 'last.json'), 'utf8')); } catch (e) {}
+        var rep = telemetry.complaint(VERSION, set, v.note, v.figmaLog, LOG, last);
+        logEvent('report', 'problem report sent by the user');
+        telemetry.send(rep, set, true).then(function (sent) { send(res, 200, { ok: sent }); });
+      });
+      return;
+    }
+    // the Figma plugin asks once whether anonymous logs may be sent: only these two settings can be set from there
+    if (req.method === 'POST' && /^\/settings\/logs\b/.test(req.url)) {
+      var sb = [];
+      req.on('data', function (c) { sb.push(c); if (sb.length > 20) req.destroy(); });
+      req.on('end', function () {
+        var v = null;
+        try { v = JSON.parse(Buffer.concat(sb).toString('utf8')); } catch (e) {}
+        if (!v || typeof v.sendLogs !== 'boolean') { send(res, 400, { ok: false, error: 'sendLogs: true / false' }); return; }
+        var set2 = writeSettings({ sendLogs: v.sendLogs, logsAsked: true }, settingsFile);
+        logEvent('settings', 'anonymous logs ' + (set2.sendLogs ? 'on' : 'off'));
+        send(res, 200, { ok: true, settings: set2 });
+      });
       return;
     }
     // "Check for updates" in the Figma plugin: the same check as the AE panel's button (installs from GitHub)

@@ -158,6 +158,7 @@ figma.ui.onmessage = async function (msg) {
   var diag = diagnostics(), t0 = Date.now();
   try {
     var doc = await buildDoc(msg.opts);
+    doc.stats = { strokes: STATS, culled: culled, secs: (Date.now() - t0) / 1000 };   // counters only: go into the anonymous report if the user allowed it
     var json = JSON.stringify(doc);
     diag.secs = (Date.now() - t0) / 1000; diag.layers = countLayers(doc.comp.layers); diag.strokes = STATS; diag.culled = culled;
     figma.ui.postMessage({ type: 'file', name: 'fig2ae_' + safeName(doc.comp.name) + '.jsx', json: json, warnings: W, bytes: json.length, diag: diag, culled: doc.culled || 0 });

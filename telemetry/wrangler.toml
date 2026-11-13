@@ -1,0 +1,11 @@
+name = "fig2ae-logs"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "LOGS"
+database_name = "fig2ae-logs"
+database_id = "3069e381-6a0b-458f-a365-f00a8a9a5bba"
+
+[triggers]
+crons = ["17 3 * * *"]

@@ -1,6 +1,6 @@
 {
   "name": "fig2ae",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "private": true,
   "description": "Figma -> After Effects перенос без кривизны",
   "scripts": {

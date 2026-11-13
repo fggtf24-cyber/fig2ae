@@ -18,7 +18,7 @@
     fs = require('fs'); path = require('path'); os = require('os');
   } else {
     // browser preview without After Effects
-    var mem = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true, unprecompTrim: false, unprecompSelect: true, unprecompExtend: false };
+    var mem = { target: 'new', imagePath: '', parametric: false, precompGroups: false, groupNulls: true, autoUpdate: true, unprecompTrim: false, unprecompSelect: true, unprecompExtend: false, sendLogs: false, logsAsked: false, installId: '' };
     U = { state: function () { return {}; }, check: function () { return Promise.resolve({ status: 'error', error: 'preview' }); } };
     S = { readSettings: function () { return mem; }, writeSettings: function (o) { for (var k in o) mem[k] = o[k]; return mem; },
           settingsDir: function () { return ''; }, VERSION: '0.4.0' };
