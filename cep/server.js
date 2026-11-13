@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.15';
+var VERSION = '0.4.16';
 var updater = require(path.join(__dirname, 'updater.js'));
 var fonts = require(path.join(__dirname, 'fonts.js'));
 var telemetry = require(path.join(__dirname, 'telemetry.js'));

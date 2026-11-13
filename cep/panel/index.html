@@ -53,6 +53,14 @@
   .check.on .box { background: #7a7a7a; border-color: #7a7a7a; }
   .check.on .box::after { content: ''; width: 6px; height: 6px; background: #1e1e1e; border-radius: 1px; }
 
+  .card { margin: 8px 10px; padding: 9px 10px; border-radius: 4px; background: rgba(80,140,255,.10); border: 1px solid rgba(80,140,255,.30); font-size: 11.5px; line-height: 1.45; }
+  .card .card-t { opacity: .8; margin-top: 4px; }
+  .card-row { display: flex; gap: 6px; margin-top: 8px; }
+  .card-row button { flex: 1; height: 26px; border: 0; border-radius: 3px; background: rgba(255,255,255,.09); color: inherit; font: inherit; cursor: pointer; }
+  .card-row button.pri { background: #3b7bf0; color: #fff; }
+  .card-row button:disabled { opacity: .5; }
+  .card textarea { width: 100%; box-sizing: border-box; margin-top: 6px; background: rgba(0,0,0,.25); color: inherit; border: 1px solid rgba(255,255,255,.15); border-radius: 3px; font: inherit; padding: 5px; resize: vertical; }
+  .act.report { margin: 8px 10px 4px; width: calc(100% - 20px); }
   .act { display: flex; align-items: center; gap: 9px; width: 100%; height: 28px; padding: 0 9px; margin-bottom: 4px; border: 0; border-radius: 3px;
     background: var(--row); color: #d0d0d0; font: inherit; text-align: left; cursor: pointer; }
   .act:hover { background: var(--row-hi); color: #fff; }
@@ -107,6 +115,13 @@
     <button id="tCur"><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>Current</button>
   </div><span id="verTag" title="Fig2AE version in After Effects"></span></div>
 
+  <!-- asked once: may anonymous logs be sent (the same answer as in the Figma plugin) -->
+  <div class="card" id="logsAsk" style="display:none">
+    <b>Help make Fig2AE better?</b>
+    <div class="card-t">After each import a short anonymous report goes to the developer: versions, OS, settings, time, errors and warnings (they can contain layer and font names). Never the design, pictures, texts or file paths. You can change it any time in System.</div>
+    <div class="card-row"><button class="pri" id="logsYes">Send anonymous logs</button><button id="logsNo">No, thanks</button></div>
+  </div>
+
   <section id="sOptions">
     <div class="sec-h">Options<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
     <div class="sec-b">
@@ -156,6 +171,16 @@
       <button class="act" data-cmd="openFolder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open exports folder</button>
           </div>
   </section>
+
+  <!-- "Report a problem": one report marked as a complaint, looked at first (sent even with the logs off) -->
+  <button class="act report" id="reportBtn" title="Something went badly wrong? Send this one report to the developer — it is looked at first"><svg viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>Report a problem</button>
+  <div class="card" id="reportBox" style="display:none">
+    <b>Report a problem</b>
+    <div class="card-t">What went wrong? What you imported or updated, what you expected, what you got.</div>
+    <textarea id="repNote" rows="4"></textarea>
+    <div class="card-t">Goes with it: the last import (errors, warnings, timings), the recent Fig2AE events, versions and settings. No design, pictures or file paths. Sent even with the anonymous logs off — only this once.</div>
+    <div class="card-row"><button class="pri" id="repSend">Send report</button><button id="repCancel">Cancel</button></div>
+  </div>
 </main>
 <div id="toast"></div>
 

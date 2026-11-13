@@ -62,7 +62,36 @@
       cs[i].className = 'check' + (k === 'groupNulls' ? ' sub' + (set.precompGroups ? ' off' : '') : '') + (set[k] ? ' on' : '');
     }
     $('unpreHint').textContent = [set.unprecompTrim ? 'trim' : '', set.unprecompExtend ? 'extend' : '', set.unprecompSelect !== false ? 'select' : ''].filter(Boolean).join(' · ');
+    $('logsAsk').style.display = set.logsAsked || !hasNode ? 'none' : 'block';
   }
+
+  /* ---------------------------------------------------------- anonymous logs: asked once, right away */
+  $('logsYes').onclick = function () { save({ sendLogs: true }); toast('Thank you — anonymous logs are on', 'ok'); };
+  $('logsNo').onclick = function () { save({ sendLogs: false }); };
+  // answered in the Figma plugin meanwhile: the card goes away here too
+  setInterval(function () {
+    if (set.logsAsked) return;
+    try { var fresh = S.readSettings(); if (fresh.logsAsked) { set = fresh; render(); } } catch (e) {}
+  }, 3000);
+
+  /* ---------------------------------------------------------- "Report a problem" (marked as a complaint, looked at first) */
+  $('reportBtn').onclick = function () {
+    var box = $('reportBox');
+    box.style.display = box.style.display === 'block' ? 'none' : 'block';
+    if (box.style.display === 'block') { $('repNote').value = ''; $('repSend').disabled = false; $('repSend').textContent = 'Send report'; $('repNote').focus(); }
+  };
+  $('repCancel').onclick = function () { $('reportBox').style.display = 'none'; };
+  $('repSend').onclick = function () {
+    var b = $('repSend');
+    b.disabled = true; b.textContent = 'Sending…';
+    fetch('http://127.0.0.1:7251/report', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                                           body: JSON.stringify({ note: $('repNote').value, figmaLog: [] }) })
+      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r && r.ok) { $('reportBox').style.display = 'none'; toast('Report sent — thank you. It will be looked at first.', 'ok'); }
+        else { b.disabled = false; b.textContent = 'Send report'; toast('Could not send the report (no internet?) — try again, or use Copy diagnostic log', 'err'); }
+      }, function () { b.disabled = false; b.textContent = 'Send report'; toast('The Fig2AE server is not running — reload the panel and try again', 'err'); });
+  };
 
   $('tNew').onclick = function () { save({ target: 'new' }); };
   $('tCur').onclick = function () { save({ target: 'current' }); };
