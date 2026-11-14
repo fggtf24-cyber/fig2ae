@@ -3,8 +3,8 @@
  *   check(fonts)   -> which of [{family, style}] AE can't find, even under a slightly different name
  *                     (the same matcher as the importer: ae/fontmatch.jsx)
  *   install(fonts) -> downloads them from Google Fonts (static TTF per style, css2 API) and installs
- *                     them for the current Windows user: %LOCALAPPDATA%\Microsoft\Windows\Fonts + HKCU
- *                     registry, no admin rights. Fonts that are not on Google Fonts (commercial ones)
+ *                     them for the current user, no admin rights: Windows %LOCALAPPDATA%\Microsoft\Windows\Fonts
+ *                     + HKCU registry, macOS ~/Library/Fonts. Fonts that are not on Google Fonts (commercial ones)
  *                     come back as "unavailable".
  */
 var fs = require('fs'), path = require('path'), os = require('os'), https = require('https'), cp = require('child_process');
@@ -64,7 +64,11 @@ async function onGoogle(families, opts) {
 
 var WEIGHT_NAMES = { 100: 'Thin', 200: 'ExtraLight', 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'SemiBold', 700: 'Bold', 800: 'ExtraBold', 900: 'Black' };
 
-function userFontsDir() { return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Microsoft', 'Windows', 'Fonts'); }
+/** per-user fonts folder, no admin rights; on macOS a file put there is active by itself, no registration */
+function userFontsDir() {
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Fonts');
+  return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Microsoft', 'Windows', 'Fonts');
+}
 
 /** registers the files for this user and tells running programs (WM_FONTCHANGE) */
 function register(files) {
@@ -82,7 +86,7 @@ function register(files) {
 async function install(fonts, opts) {
   opts = opts || {};
   var res = { installed: [], unavailable: [], failed: [] };
-  if (process.platform !== 'win32' && !opts.dir) { res.failed.push({ font: '*', error: 'installing fonts works on Windows only' }); return res; }
+  if (process.platform !== 'win32' && process.platform !== 'darwin' && !opts.dir) { res.failed.push({ font: '*', error: 'installing fonts works on Windows and macOS only' }); return res; }
   var dir = opts.dir || userFontsDir();
   fs.mkdirSync(dir, { recursive: true });
   var byFamily = {};
@@ -120,7 +124,7 @@ async function install(fonts, opts) {
       } catch (e) { res.failed.push({ font: label, error: String(e.message || e) }); }
     }
   }
-  if (files.length && !opts.dir) {
+  if (files.length && !opts.dir && process.platform === 'win32') {
     try { register(files); } catch (e) { res.failed.push({ font: '*', error: 'could not register the fonts: ' + String(e.message || e) }); }
   }
   return res;

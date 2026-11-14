@@ -66,5 +66,15 @@ fonts.install([{ family: 'Roboto', style: 'Medium' }, { family: 'Roboto', style:
   assert.ok(fs.existsSync(path.join(dir, 'Roboto-Medium.ttf')) && fs.existsSync(path.join(dir, 'Roboto-BoldItalic.ttf')));
   assert.ok(asked.some(function (u) { return /family=Roboto:ital,wght@0,500;1,700$/.test(u); }), asked.join('\n'));
   fs.rmSync(dir, { recursive: true, force: true });
+  // macOS (CI: macos-latest): the user's own ~/Library/Fonts, nothing to register
+  if (process.platform !== 'darwin') return;
+  var home = fs.mkdtempSync(path.join(os.tmpdir(), 'fig2ae-home-'));
+  process.env.HOME = home;
+  return fonts.install([{ family: 'Roboto', style: 'Medium' }], { get: fakeGet }).then(function (r) {
+    assert.deepStrictEqual(r.failed, []);
+    assert.ok(fs.existsSync(path.join(home, 'Library', 'Fonts', 'Roboto-Medium.ttf')), 'шрифт в ~/Library/Fonts');
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+}).then(function () {
   console.log('fonts: all checks passed');
 }).catch(function (e) { console.error(e); process.exit(1); });

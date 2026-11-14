@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.16';
+var VERSION = '0.4.17';
 var updater = require(path.join(__dirname, 'updater.js'));
 var fonts = require(path.join(__dirname, 'fonts.js'));
 var telemetry = require(path.join(__dirname, 'telemetry.js'));
@@ -273,7 +273,9 @@ function start(evalHost, opts) {
     if (req.method === 'GET' && /^\/figma\/(code\.js|ui\.html)\b/.test(req.url)) {
       var inst = null;
       try { inst = JSON.parse(fs.readFileSync(path.join(settingsDir(), 'install.json'), 'utf8')); } catch (e) {}
-      var dir = (inst && inst.figmaPlugin) || path.join(process.env.LOCALAPPDATA || os.homedir(), 'Fig2AE', 'figma-plugin');
+      // where the installers put it: Setup.exe / install.ps1 on Windows, install-mac.sh on macOS
+      var dir = (inst && inst.figmaPlugin) || (process.platform === 'win32'
+        ? path.join(process.env.LOCALAPPDATA || os.homedir(), 'Fig2AE', 'figma-plugin') : path.join(settingsDir(), 'figma-plugin'));
       var fname = /code\.js/.test(req.url) ? 'code.js' : 'ui.html';
       try {
         var body = fs.readFileSync(path.join(dir, fname), 'utf8');
