@@ -64,8 +64,55 @@ if (process.platform === 'win32') {
 fs.rmSync(stage, { recursive: true, force: true });
 fs.copyFileSync(zip, path.join(ROOT, 'Fig2AE.zip'));
 buildExe(path.join(ROOT, 'Fig2AE.zip'), path.join(ROOT, 'Fig2AE-Setup.exe'));
+buildMacZip(path.join(ROOT, 'Fig2AE-mac.zip'));
 fs.writeFileSync(path.join(ROOT, 'version.txt'), ver + '\n');
 console.log('Fig2AE.zip + version.txt  v' + ver + '  (' + Math.round(fs.statSync(zip).size / 1024) + ' KB)');
+
+/**
+ * Fig2AE-mac.zip: Fig2AE/ with "Install Fig2AE.command" (double-click), the uninstaller, the guide,
+ * and files/ (install-mac.sh + what it installs). Written here, not by tar/zip: the .command files
+ * need the Unix executable bit, which an archive made on Windows never has — without it macOS
+ * won't run them.
+ */
+function buildMacZip(out) {
+  var zlib = require('zlib'), entries = [];
+  function add(name, file, exec) { entries.push({ name: 'Fig2AE/' + name, data: fs.readFileSync(file), mode: exec ? 0o100755 : 0o100644 }); }
+  function addTree(rel, under) {
+    var p = path.join(ROOT, rel);
+    if (fs.statSync(p).isDirectory()) fs.readdirSync(p).forEach(function (n) { addTree(rel + '/' + n, under); });
+    else add(under + rel, p, /\.sh$/.test(rel));
+  }
+  var mac = path.join(ROOT, 'installer', 'mac');
+  fs.readdirSync(mac).forEach(function (n) { add(n, path.join(mac, n), /\.command$/.test(n)); });
+  ['cep', 'figma-plugin', 'ae/Fig2AE Panel.jsx', 'install-mac.sh'].forEach(function (r) { addTree(r, 'files/'); });
+
+  var CRC = [];
+  for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; CRC[n] = c >>> 0; }
+  function crc32(b) { var c = 0xffffffff; for (var i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+  var d = new Date(), dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+      dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  var parts = [], central = [], offset = 0;
+  entries.forEach(function (e) {
+    var name = Buffer.from(e.name, 'utf8'), packed = zlib.deflateRawSync(e.data), crc = crc32(e.data);
+    var h = Buffer.alloc(30);
+    h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(20, 4); h.writeUInt16LE(0x0800, 6); h.writeUInt16LE(8, 8);   // UTF-8 names, deflate
+    h.writeUInt16LE(dosTime, 10); h.writeUInt16LE(dosDate, 12); h.writeUInt32LE(crc, 14);
+    h.writeUInt32LE(packed.length, 18); h.writeUInt32LE(e.data.length, 22); h.writeUInt16LE(name.length, 26);
+    var c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE((3 << 8) | 20, 4); c.writeUInt16LE(20, 6);                    // made by Unix: modes count
+    c.writeUInt16LE(0x0800, 8); c.writeUInt16LE(8, 10); c.writeUInt16LE(dosTime, 12); c.writeUInt16LE(dosDate, 14);
+    c.writeUInt32LE(crc, 16); c.writeUInt32LE(packed.length, 20); c.writeUInt32LE(e.data.length, 24);
+    c.writeUInt16LE(name.length, 28); c.writeUInt32LE((e.mode << 16) >>> 0, 38); c.writeUInt32LE(offset, 42);
+    parts.push(h, name, packed);
+    central.push(c, name);
+    offset += 30 + name.length + packed.length;
+  });
+  var cd = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  fs.writeFileSync(out, Buffer.concat(parts.concat([cd, end])));
+  console.log('Fig2AE-mac.zip  (' + Math.round(fs.statSync(out).size / 1024) + ' KB, ' + entries.length + ' files)');
+}
 
 function buildExe(payload, exe) {
   var inst = path.join(ROOT, 'installer');

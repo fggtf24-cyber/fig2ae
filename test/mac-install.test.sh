@@ -65,6 +65,18 @@ if [ "$(uname)" = Darwin ] || command -v unzip > /dev/null; then
   check "$H"
 else echo 'no unzip here: curl | bash path skipped'; fi
 
+# 3b. Fig2AE-mac.zip: unpacked the way Finder does it, the .command files must still be executable and work
+if [ -f "$ROOT/Fig2AE-mac.zip" ] && { [ "$(uname)" = Darwin ] || command -v unzip > /dev/null; }; then
+  Z="$T/zip"; mkdir "$Z"
+  if [ "$(uname)" = Darwin ]; then ditto -x -k "$ROOT/Fig2AE-mac.zip" "$Z"; else unzip -q "$ROOT/Fig2AE-mac.zip" -d "$Z"; fi
+  [ -x "$Z/Fig2AE/Install Fig2AE.command" ] && [ -x "$Z/Fig2AE/Uninstall Fig2AE.command" ] || fail '.command lost its executable bit'
+  H="$(home c)"
+  HOME="$H" "$Z/Fig2AE/Install Fig2AE.command" > /dev/null
+  check "$H"
+  HOME="$H" "$Z/Fig2AE/Uninstall Fig2AE.command" > /dev/null
+  [ ! -d "$H/Library/Application Support/Adobe/CEP/extensions/fig2ae" ] || fail 'Uninstall Fig2AE.command left the extension'
+fi
+
 # 4. the importer's picture decoding, with a path that would run code inside double quotes
 if [ "$(uname)" = Darwin ]; then
   P="$T/it's \$(touch pwned)"

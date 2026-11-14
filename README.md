@@ -296,7 +296,12 @@ Glass пропускается с предупреждением.
 Import plugin from manifest…. Удаление — Параметры Windows → Приложения → Fig2AE.
 Exe не подписан: Windows SmartScreen может спросить — «Подробнее» → «Выполнить в любом случае».
 
-**macOS — одна строка в Терминале**, без Node.js и пароля:
+**macOS, способ 1 — архив** [`Fig2AE-mac.zip`](https://github.com/fggtf24-cyber/fig2ae/raw/main/Fig2AE-mac.zip): распаковать,
+дважды щёлкнуть `Install Fig2AE.command`, внутри инструкция. Файл не подписан у Apple, поэтому macOS 15+ один раз
+попросит «Всё равно открыть» в Настройки → Конфиденциальность и безопасность. Архив собирает `make-release.js`
+сам: у `.command` должен быть флаг исполняемого файла, а zip, собранный на Windows, его теряет.
+
+**macOS, способ 2 — одна строка в Терминале**, без Node.js, пароля и предупреждений:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fggtf24-cyber/fig2ae/main/install-mac.sh | bash
 ```

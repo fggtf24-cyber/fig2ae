@@ -1,0 +1,36 @@
+Fig2AE для macOS
+================
+
+СПОСОБ 1 — двойной клик (этот архив)
+
+1. Закрой After Effects.
+2. Дважды щёлкни «Install Fig2AE.command».
+   macOS скажет, что не может проверить разработчика, — это нормально, файл не подписан у Apple:
+     - macOS 15 и новее: нажми «Готово», открой Системные настройки → Конфиденциальность и безопасность,
+       внизу у строки про «Install Fig2AE.command» нажми «Всё равно открыть», подтверди паролем/Touch ID;
+     - macOS 14 и старше: правый клик по файлу → Открыть → Открыть.
+   Откроется Терминал, установка займёт пару секунд.
+3. After Effects → Settings → Scripting & Expressions → включи
+   «Allow Scripts to Write Files and Access Network», перезапусти After Effects.
+   Панель: Window → Extensions → Fig2AE.
+4. Figma (приложение): Plugins → Development → Import plugin from manifest…
+   В окне выбора файла нажми Cmd+Shift+G, вставь путь (Cmd+V — установщик уже положил его в буфер), Return.
+
+После установки эту папку можно удалить: всё скопировано куда нужно, дальше обновляется само.
+Удалить Fig2AE: «Uninstall Fig2AE.command».
+
+СПОСОБ 2 — одна строка в Терминале (без предупреждений macOS)
+
+Открой Терминал (Cmd+Пробел, «Terminal»), вставь и нажми Return:
+
+  curl -fsSL https://raw.githubusercontent.com/fggtf24-cyber/fig2ae/main/install-mac.sh | bash
+
+Дальше шаги 3–4 выше.
+
+
+Fig2AE for macOS — METHOD 1: close After Effects, double-click "Install Fig2AE.command".
+If macOS blocks it: macOS 15+ — System Settings → Privacy & Security → "Open Anyway";
+macOS 14 and older — right-click → Open → Open. Then After Effects → Settings → Scripting & Expressions →
+"Allow Scripts to Write Files and Access Network", restart AE. Figma: Plugins → Development →
+Import plugin from manifest…, Cmd+Shift+G, paste, Return.
+METHOD 2 — Terminal: curl -fsSL https://raw.githubusercontent.com/fggtf24-cyber/fig2ae/main/install-mac.sh | bash

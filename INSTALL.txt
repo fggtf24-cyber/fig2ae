@@ -10,7 +10,10 @@ Windows
      - Figma: the plugin updates by itself if it was installed before; otherwise
        Plugins > Development > Import plugin from manifest... > figma-plugin\manifest.json.
 
-macOS
+macOS, way 1: download https://github.com/fggtf24-cyber/fig2ae/raw/main/Fig2AE-mac.zip, unpack it,
+  double-click "Install Fig2AE.command" (the guide inside explains the one macOS security prompt).
+
+macOS, way 2:
   1. Open Terminal (Cmd+Space, type Terminal), paste this line, press Return:
 
      curl -fsSL https://raw.githubusercontent.com/fggtf24-cyber/fig2ae/main/install-mac.sh | bash
