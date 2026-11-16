@@ -208,7 +208,7 @@
             if (updateIn) {
                 mode = 'update';
                 comp = updateIn;
-                updateFromFigma(updateIn, doc, updateSel || []);
+                updateFromFigma(updateIn, doc, updateSel || [], opts.place === 'current' ? 'current' : 'new');
                 anchor = null;
             } else if (target) {
                 // like AEUX "Current": the layers go into the active comp, the frame centred in it
@@ -407,19 +407,74 @@
      * off and labelled red, never deleted.
      */
     var UPD = null;
-    function updateFromFigma(rc, doc, sel) {
+    function updateFromFigma(rc, doc, sel, place) {
         UPD = { updated: 0, added: 0, gone: 0, live: {}, doc: doc };
-        var def = doc.comp, C = rc, i;
+        var def = doc.comp, C = rc, i, fidLayer = null;
         // where it goes: the precomp of that Figma frame/group (selected, or anywhere in the comp), or the comp itself
         if (def.fid) {
             var cand = [], all = [];
             for (i = 0; i < sel.length; i++) cand.push(sel[i]);
             for (i = 1; i <= rc.numLayers; i++) all.push(rc.layer(i));
             cand = cand.concat(all);
+            var asPicture = null;
             for (i = 0; i < cand.length; i++) {
                 var lk = readLink(cand[i]);
-                if (lk && lk.id.split('#')[0] === def.fid && cand[i].source instanceof CompItem) { C = cand[i].source; break; }
+                if (!lk || lk.id.split('#')[0] !== def.fid) continue;
+                if (cand[i].source instanceof CompItem) { C = lk.w ? elementComp(cand[i].source) : cand[i].source; fidLayer = cand[i]; break; }
+                if (!asPicture && cand[i].source instanceof FootageItem) asPicture = cand[i];   // imported as a picture (rasterized)
             }
+        }
+        // the open comp is the precomp of a PART of the selected Figma frame (the frame was selected in Figma, the update
+        // run from inside one of its precomps): only that part of the export goes in here, in its own coordinates
+        var subPart = false;
+        if (C === rc && !fidLayer && !asPicture && def.fid) {
+            var cl0 = readLink(rc);
+            if (cl0 && cl0.id.split('#')[0] !== def.fid) {
+                var sub = findInDoc(def, function (X) { return X.type === 'precomp' && X.comp && X.key === cl0.id; });
+                if (sub.length !== 1) sub = findInDoc(def, function (X) { return X.type === 'precomp' && X.comp && X.fid === cl0.id.split('#')[0]; });
+                if (sub.length === 1) {
+                    var keepRoots = def.fid;
+                    def = sub[0].comp; def.fid = sub[0].fid; def.origin = null;
+                    doc.roots = [keepRoots, sub[0].fid];
+                    subPart = true;
+                }
+            }
+        }
+        // the Figma selection came as ONE picture (marked with the star), and AE has it as vectors — the selected layers,
+        // or the precomp of that frame: they are replaced by that one picture, in their place
+        var topsR = [];
+        for (i = 0; i < def.layers.length; i++) if (!def.layers[i].guide) topsR.push(def.layers[i]);
+        var asRaster = topsR.length === 1 && topsR[0].type === 'image' && topsR[0].fid &&
+                       (topsR[0].fid === def.fid || ('|' + (doc.roots || []).join('|') + '|').indexOf('|' + topsR[0].fid + '|') >= 0);
+        if (asRaster) {
+            var targets = [];
+            for (i = 0; i < sel.length; i++) if (!(sel[i].source instanceof FootageItem)) targets.push(sel[i]);
+            if (!targets.length && fidLayer) targets = [fidLayer];
+            if (targets.length) {
+                var pic = collapseToRaster(rc, targets, topsR[0], doc, def);
+                LOG.unshift('Updated from Figma: ' + targets.length + ' layer(s) → one picture "' + pic.name + '" in their place; they are switched off, not deleted — in "' + rc.name + '"');
+                UPD = null;
+                return;
+            }
+        }
+        // a picture selected in AE on its own (whatever it is linked to): it is the one to turn into this Figma selection
+        if (C === rc && !asPicture && sel.length === 1 && sel[0].source instanceof FootageItem) asPicture = sel[0];
+        if (C === rc && asPicture && place === 'current') {
+            // "Current": the frame's elements go into this comp as layers, right over the picture (placed by the
+            // picture itself — its position and size in the comp), the picture is switched off, not deleted
+            explodeOver(rc, asPicture, def, doc);
+            LOG.unshift('Updated from Figma: "' + asPicture.name + '" (picture) → ' + UPD.added + ' layer(s) of the Figma frame, right over it; the picture is switched off — in "' + rc.name + '"');
+            UPD = null;
+            return;
+        }
+        if (C === rc && asPicture) {
+            // "New Comp": the picture is swapped for ONE precomp with the frame's elements (its place, size, animation,
+            // effects stay) — never its contents built next to it
+            var wholeP = { type: 'precomp', name: def.name, size: [def.w, def.h], pos: [def.w / 2, def.h / 2], anchor: [def.w / 2, def.h / 2],
+                           scale: [100, 100], rot: 0, opacity: 100, blend: 'NORMAL', effects: [], comp: def, fid: def.fid, key: def.fid + '#0' };
+            def = { name: def.name, w: def.w, h: def.h, origin: def.origin, layers: [wholeP] };
+            UPD.forceMap = {}; UPD.forceMap[wholeP.key] = asPicture; UPD.noGone = true;
+            sel = [];
         }
         var ids = {};
         (function collect(d) {
@@ -472,11 +527,188 @@
                 if (tops.length === 1 && tops[0].key) UPD.force = { key: tops[0].key, lay: one };
             }
         }
-        syncComp(C, def, def.origin || null, doc);
+        syncComp(C, def, def.origin || null, doc, subPart ? 'fixed' : false);
         LOG.unshift('Updated from Figma: ' + UPD.updated + ' layer(s) updated, ' + UPD.added + ' added' +
                     (UPD.gone ? ', ' + UPD.gone + ' no longer in Figma (switched off, red label)' : '') + ' — in "' + C.name + '"');
         if (!UPD.updated && !UPD.added) LOG.unshift('Nothing matched: select in After Effects the comp or precomp this Figma selection was imported into');
         UPD = null;
+    }
+
+    /**
+     * The layers of def built into comp rc exactly over the picture layer pic (which was a render of the same frame):
+     * the frame's box is fitted to the picture's box in the comp (its scale and parents included), then the picture
+     * is switched off. New layers sit right above it, in Figma's order, with its timing.
+     */
+    function explodeOver(rc, pic, def, doc) {
+        var src = pic.source, k = compScale(pic), tl = toCompPt(pic, [0, 0]);
+        var kx = k[0] * src.width / def.w, ky = k[1] * src.height / def.h;
+        if (Math.abs(kx / ky - 1) > 0.02) note('"' + pic.name + '": the picture and the Figma frame have different proportions — fitted by width');
+        var tx = tl[0], ty = tl[1] + (src.height * k[1] - def.h * kx) / 2;
+        var ctx = { nulls: {}, kids: [], origin: null }, n0 = rc.numLayers, i;
+        groupCtx.push(ctx);
+        try {
+            for (i = 0; i < def.layers.length; i++) {
+                var L = def.layers[i];
+                if (L.guide) continue;
+                xLayer(L, kx, tx, ty);
+                buildLayer(rc, L, doc);
+            }
+        } finally { groupCtx.pop(); }
+        var made = [];
+        for (i = 1; i <= rc.numLayers - n0; i++) made.push(rc.layer(i));             // top-most first
+        for (var q = made.length - 1; q >= 0; q--) unlockedDo(made[q], function () { made[q].moveBefore(q === made.length - 1 ? pic : made[q + 1]); });
+        copyTiming(made, pic);
+        for (var j = 0; j < ctx.kids.length; j++) {
+            var kid = ctx.kids[j][0], nul = ctx.nulls[ctx.kids[j][1]];
+            if (nul && kid.index !== nul.index) try { unlockedDo(kid, function () { kid.parent = nul; }); } catch (e) {}
+        }
+        unlockedDo(pic, function () { pic.enabled = false; });
+        for (var s = 0; s < made.length; s++) UPD.live[made[s].id] = 1;
+        UPD.added = made.length;
+    }
+
+    /**
+     * Vectors → picture: the layers targets (the parts of a Figma group, or its precomp) give way to the picture L of
+     * that group. It takes their box in the comp (their resting transforms, parents included), sits above the top-most
+     * of them with its timing, follows its animation when it was one layer (parented to it); they are switched off.
+     */
+    function collapseToRaster(rc, targets, L, doc, def) {
+        var top = targets[0], i, q;
+        // a box in comp space around the given layer-space rect of layer t (through its parents)
+        function boxOf(t, r, b) {
+            var cs = [[r.left, r.top], [r.left + r.width, r.top], [r.left, r.top + r.height], [r.left + r.width, r.top + r.height]];
+            for (var c4 = 0; c4 < 4; c4++) {
+                var p = toCompPt(t, cs[c4]);
+                b.x0 = Math.min(b.x0, p[0]); b.y0 = Math.min(b.y0, p[1]); b.x1 = Math.max(b.x1, p[0]); b.y1 = Math.max(b.y1, p[1]);
+            }
+        }
+        function rectOf(t) { try { var r = t.sourceRectAtTime(t.inPoint, false); return r && r.width > 0 && r.height > 0 ? r : null; } catch (e) { return null; } }
+        function ownBg(t) { var lk = readLink(t); return lk && lk.id.split('#')[0] === L.fid && !(t.source instanceof CompItem) && !t.nullLayer; }
+        for (i = 0; i < targets.length; i++) if (targets[i].index < top.index) top = targets[i];
+        // 1. exact: the frame's own background (linked to the frame) — selected, or inside the selected precomp
+        var fb = { x0: 1e12, y0: 1e12, x1: -1e12, y1: -1e12 }, haveFrame = false;
+        for (i = 0; i < targets.length && !haveFrame; i++) {
+            var t = targets[i], r;
+            if (ownBg(t) && (r = rectOf(t))) { boxOf(t, r, fb); haveFrame = true; break; }
+            if (t.source instanceof CompItem) {
+                for (q = 1; q <= t.source.numLayers; q++) {
+                    var inner = t.source.layer(q), ri;
+                    if (ownBg(inner) && (ri = rectOf(inner))) {
+                        // inner layer space → precomp space → comp space
+                        var c0 = toCompPt(inner, [ri.left, ri.top]), c1 = toCompPt(inner, [ri.left + ri.width, ri.top + ri.height]);
+                        boxOf(t, { left: Math.min(c0[0], c1[0]), top: Math.min(c0[1], c1[1]), width: Math.abs(c1[0] - c0[0]), height: Math.abs(c1[1] - c0[1]) }, fb);
+                        haveFrame = true; break;
+                    }
+                }
+            }
+        }
+        var posX, posY, f;
+        if (haveFrame && def && def.w && def.h) {
+            // the frame's box ↔ the export's frame (0,0)–(w,h): the picture lands where Figma has it relative to the frame
+            f = (fb.x1 - fb.x0) / def.w;
+            var cxy = defCenter(L);
+            posX = fb.x0 + cxy[0] * f; posY = fb.y0 + cxy[1] * f;
+        } else {
+            // 2. else: the box around the visible selected layers (switched-off ones are mattes and the like)
+            var b = { x0: 1e12, y0: 1e12, x1: -1e12, y1: -1e12 };
+            for (i = 0; i < targets.length; i++) { var tr; if (targets[i].enabled && !targets[i].nullLayer && (tr = rectOf(targets[i]))) boxOf(targets[i], tr, b); }
+            if (!(b.x1 > b.x0 && b.y1 > b.y0)) throw new Error('the selected layers have no size to put the picture in');
+            var bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+            f = Math.min(bw / L.size[0], bh / L.size[1]);
+            if (Math.abs((bw / bh) / (L.size[0] / L.size[1]) - 1) > 0.03)
+                note('The picture of "' + L.name + '" and the selected layers have different proportions (' + Math.round(L.size[0]) + '×' + Math.round(L.size[1]) +
+                     ' vs ' + Math.round(bw) + '×' + Math.round(bh) + ') — fitted inside and centred');
+            posX = (b.x0 + b.x1) / 2; posY = (b.y0 + b.y1) / 2;
+        }
+        var ctx = { nulls: {}, kids: [], origin: null }, lay;
+        groupCtx.push(ctx);
+        try { lay = buildLayer(rc, L, doc); } finally { groupCtx.pop(); }
+        var T = lay.property('ADBE Transform Group');
+        T.property('ADBE Position').setValue([posX, posY]);
+        T.property('ADBE Scale').setValue([f * 100 / L.png.scale, f * 100 / L.png.scale]);
+        T.property('ADBE Rotate Z').setValue(0);
+        lay.moveBefore(top);
+        copyTiming([lay], top);
+        if (targets.length === 1) try { lay.parent = top; } catch (e) {}       // its animation (not its opacity) carries on
+        for (i = 0; i < targets.length; i++) unlockedDo(targets[i], function () { targets[i].enabled = false; });
+        var pp = lay.transform.position.value;
+        setLink(lay, { id: L.key, pa: L.pfid, p: [pp[0], pp[1]], fx: 0, c: rc.id });
+        UPD.live[lay.id] = 1; UPD.added = 1;
+        return lay;
+    }
+
+    /*
+     * Shape contents updated IN PLACE (src: the new contents built on a scratch layer, dst: the layer in the comp):
+     * Figma's own parts are matched by kind and name and get the new values; parts the user added (Trim Paths,
+     * Repeater, Wiggle, their own groups) stay — with their keyframes; parts Figma made that are gone from Figma are
+     * removed, new ones are added. Expressions reading content("stroke 1").content("Path 1") keep working.
+     */
+    var FIGMA_KINDS = { 'ADBE Vector Group': 1, 'ADBE Vector Shape - Group': 1, 'ADBE Vector Shape - Rect': 1, 'ADBE Vector Shape - Ellipse': 1,
+                        'ADBE Vector Graphic - Fill': 1, 'ADBE Vector Graphic - Stroke': 1, 'ADBE Vector Graphic - G-Fill': 1, 'ADBE Vector Filter - Offset': 1 };
+    function figmaMade(p) {
+        // what the importer itself creates: groups "fill 2" / "stroke 1.3" / "shadow", and AE's default names of its parts
+        if (!FIGMA_KINDS[p.matchName]) return false;
+        if (p.matchName === 'ADBE Vector Group') return /^(fill|stroke) \d+(\.\d+)?$|^shadow$|^shape \(shadow offset\)$/.test(p.name);
+        return /^(Path|Fill|Stroke|Gradient Fill|Rectangle Path|Ellipse Path|Offset Paths) \d+$/.test(p.name);
+    }
+    function settable(q) { return !(q.numKeys > 0 || (q.canSetExpression && q.expressionEnabled && q.expression !== '')); }
+    function setLeaf(s, d) {
+        if (!d || !settable(d)) return;
+        if (s.propertyValueType === PropertyValueType.NO_VALUE || s.propertyValueType === PropertyValueType.CUSTOM_VALUE) return;
+        try { d.setValue(s.value); } catch (e) {}
+    }
+    /** a fresh copy of src added into dst (an indexed group: Contents, Root Vectors, Dashes) */
+    function cloneInto(s, dst) {
+        var d = null;
+        try { d = dst.addProperty(s.matchName); } catch (e) { return null; }
+        try { d.name = s.name; } catch (e2) {}
+        mergeShape(s, d);
+        return d;
+    }
+    function mergeShape(src, dst) {
+        if (src.propertyType === PropertyType.INDEXED_GROUP) {
+            var used = {}, i, j;
+            for (i = 1; i <= src.numProperties; i++) {
+                var s = src.property(i), hit = null;
+                for (j = 1; j <= dst.numProperties && !hit; j++) {
+                    var q = dst.property(j);
+                    if (!used[j] && q.matchName === s.matchName && q.name === s.name) { hit = q; used[j] = 1; }
+                }
+                if (s.propertyType === PropertyType.PROPERTY) {                  // e.g. a dash length in Dashes
+                    if (!hit) { try { hit = dst.addProperty(s.matchName); used[dst.numProperties] = 1; } catch (e5) {} }
+                    setLeaf(s, hit);
+                } else if (hit) mergeShape(s, hit);
+                else { var made = cloneInto(s, dst); if (made) used[dst.numProperties] = 1; }
+            }
+            // gone from Figma: only parts Figma made (the user's own additions are not touched)
+            for (j = dst.numProperties; j >= 1; j--) if (!used[j] && figmaMade(dst.property(j))) try { dst.property(j).remove(); } catch (e3) {}
+            return;
+        }
+        for (var k = 1; k <= src.numProperties; k++) {
+            var sp = src.property(k);
+            if (sp.propertyType === PropertyType.PROPERTY) { setLeaf(sp, dst.property(sp.matchName)); continue; }
+            var dp = null;
+            try { dp = dst.property(sp.matchName); } catch (e4) {}
+            if (dp) mergeShape(sp, dp);
+        }
+    }
+    /** gradient colours (AE lets no script set them): written again into the matching gradient fills from the export */
+    function refreshGradients(C, lay, L) {
+        var root = lay.property('ADBE Root Vectors Group');
+        for (var gi = 0; gi < (L.groups || []).length; gi++) {
+            var P = L.groups[gi].paint;
+            if (!P || !P.stops || L.groups[gi].stroke) continue;
+            var want = 'fill ' + (gi + 1);
+            for (var r = 1; r <= root.numProperties; r++) {
+                var g = root.property(r);
+                if (g.matchName !== 'ADBE Vector Group' || (g.name !== want && g.name.indexOf(want + '.') !== 0)) continue;
+                var items = g.property('ADBE Vectors Group');
+                for (var it = 1; it <= items.numProperties; it++) {
+                    if (items.property(it).matchName !== 'ADBE Vector Graphic - G-Fill') continue;
+                    try { applyGradientColors(C, lay, items.property(it), P.stops, r, it); } catch (e) {}
+                }
+            }
+        }
     }
 
     /** export layers anywhere in def (precomps, mattes) that pass test */
@@ -567,7 +799,10 @@
             var e = L && L.key ? idx[L.key] : null;
             if (!e || e.used) return null;
             var comp = e.lay.source instanceof CompItem;
-            if ((L.type === 'precomp') !== comp && !(L.type !== 'precomp' && e.link && e.link.w)) return null;   // a precomp only for a precomp
+            // a precomp only for a precomp — or for the picture it was rasterized to (switched on: it gets swapped for the vectors);
+            // never for a shape or text that shares its Figma id (a frame's own background / glow)
+            var picOn = e.lay.source instanceof FootageItem && e.lay.enabled;
+            if ((L.type === 'precomp') !== comp && !(L.type !== 'precomp' && e.link && e.link.w) && !(L.type === 'precomp' && picOn)) return null;
             return e;
         }
         // layers of an import made before links existed: same name (AE's "Button 2", "Button 3"… count as "Button")
@@ -598,7 +833,15 @@
         // its layers are taken out into this comp, in its coordinates — no second copy of it gets built
         function peek(L) {
             if (!L) return false;
-            if (keyHit(L)) return true;
+            // here as a layer of any kind (a precomp, or a picture it was rasterized to) = not un-precomped
+            if (L.key && UPD.forceMap && UPD.forceMap[L.key]) return true;
+            var ik = L.key ? idx[L.key] : null;
+            if (ik && !ik.used) {
+                // a switched-off picture of a precomp whose contents already lie here as layers (it was turned into
+                // vectors with "Current"): those layers are what is here, not the picture
+                var offPic = L.type === 'precomp' && L.comp && !ik.lay.enabled && ik.lay.source instanceof FootageItem && anyInside(L.comp);
+                if (!offPic) return true;
+            }
             var li = loose[baseName(L.name)];
             return !!(li && li.length);
         }
@@ -647,13 +890,21 @@
                 if (ap) { A.push(ap); D.push(defCenter(L)); }
             }
             var med = function (a) { a.sort(function (x, y) { return x - y; }); return a[Math.floor(a.length / 2)]; };
-            if (A.length >= 2) {
+            // a part of a frame updated in its own precomp: same coordinates as at import — never a guessed scale
+            if (A.length >= 2 && register !== 'fixed') {
                 var ks = [];
                 for (var a1 = 0; a1 < A.length; a1++) for (var a2 = a1 + 1; a2 < A.length; a2++) {
                     var dd = Math.sqrt(Math.pow(D[a1][0] - D[a2][0], 2) + Math.pow(D[a1][1] - D[a2][1], 2));
                     if (dd > 4) ks.push(Math.sqrt(Math.pow(A[a1][0] - A[a2][0], 2) + Math.pow(A[a1][1] - A[a2][1], 2)) / dd);
                 }
-                if (ks.length) { k = med(ks); if (Math.abs(k - 1) < 0.02) k = 1; }
+                if (ks.length) {
+                    k = med(ks.slice());
+                    // trust a scale only when most pairs agree on it (a stray pair — a leftover picture, a moved
+                    // element — must not blow the whole update up ×3)
+                    var agree = 0;
+                    for (var a3 = 0; a3 < ks.length; a3++) if (Math.abs(ks[a3] / k - 1) < 0.05) agree++;
+                    if (Math.abs(k - 1) < 0.02 || A.length < 3 || agree < ks.length * 0.6) k = 1;
+                }
             }
             if (A.length) {
                 var sx = [], sy = [];
@@ -709,6 +960,8 @@
                     copyTiming(pending, below);
                     pending = [];
                 } else {
+                    // the frame's own background, absent here because the import made it the comp's colour: not added
+                    if (L.type === 'shape' && cl && L.fid === cl.id.split('#')[0] && /· background$/.test(L.name)) continue;
                     var n0 = C.numLayers, nl = buildLayer(C, L, doc);
                     if (!nl) continue;
                     UPD.added++;
@@ -771,11 +1024,15 @@
         }
         var T = lay.property('ADBE Transform Group');
         unlockedDo(lay, function () {
-            var anchorFix = null;
+            var anchorFix = null, basePos = null;
             if (L.type === 'shape' && lay instanceof ShapeLayer) {
-                var root = lay.property('ADBE Root Vectors Group');
-                for (var r = root.numProperties; r >= 1; r--) root.property(r).remove();
-                buildShape(C, L, lay);
+                // the new contents built on a scratch layer: same groups (names, kinds) as now → only the values go over
+                // (path points, colours, widths) — expressions that read content("fill 1").content(…).path keep
+                // working (a dot riding the chart line); a changed structure is rebuilt
+                var root = lay.property('ADBE Root Vectors Group'), tmpS = buildShape(C, L), troot = tmpS.property('ADBE Root Vectors Group');
+                mergeShape(troot, root);
+                tmpS.remove();
+                refreshGradients(C, lay, L);
             } else if (L.type === 'text' && lay instanceof TextLayer) {
                 var tmp = buildText(C, L), sp = lay.property('ADBE Text Properties').property('ADBE Text Document');
                 if (!animated(sp)) sp.setValue(tmp.property('ADBE Text Properties').property('ADBE Text Document').value);
@@ -801,8 +1058,21 @@
                 // the one layer the user picked: it stays where and how it is, only what it shows changes
                 if (anchorFix && !animated(A)) A.setValue(anchorFix);
             } else {
-            if (!animated(A)) A.setValue(X.anchor);
-            if (P.dimensionsSeparated || animated(P)) {
+            // what the last sync put here is known only for a layer linked in this very comp (not moved in by Un-Precomp)
+            var hist = ex.link && ex.link.p && +ex.link.c === C.id;
+            if (!animated(A) && !animated(P) && !P.dimensionsSeparated && hist) {
+                // static: Figma's new place + however far the user moved the layer in AE since the last sync —
+                // a layer moved by hand stays where they put it, relative to Figma's change
+                var curP = P.value, dU = [curP[0] - ex.link.p[0], curP[1] - ex.link.p[1]];
+                var tgt = lay.parent ? fromCompPt(lay.parent, X.pos) : X.pos;
+                A.setValue(X.anchor);
+                P.setValue([tgt[0] + dU[0], tgt[1] + dU[1]]);
+                basePos = [tgt[0], tgt[1]];
+            } else if (!animated(P) && !P.dimensionsSeparated) {
+                // no history (an older import, a layer brought over from another comp): its place is the user's — kept;
+                // Figma's place is remembered, so from now on a Figma move is told apart from the user's own
+                var tg0 = lay.parent ? fromCompPt(lay.parent, X.pos) : X.pos; basePos = [tg0[0], tg0[1]];
+            } else if (P.dimensionsSeparated || animated(P)) {
                 // animated: every key moves by how far the element moved in Figma — measured where the animation
                 // comes to rest against where Figma has the element now (a few px of text-rendering noise are ignored)
                 // animated: every key moves by as much as the element moved in Figma since the last import/update
@@ -814,18 +1084,18 @@
                     if (Math.abs(mv[0]) > 0.5 || Math.abs(mv[1]) > 0.5) offsetPosition(lay, mv);
                 }
             } else P.setValue(lay.parent ? fromCompPt(lay.parent, X.pos) : X.pos);    // a parented layer: in its parent's space
-            if (!animated(T.property('ADBE Rotate Z')) && !lay.parent) T.property('ADBE Rotate Z').setValue(L.rot);
-            if (!animated(T.property('ADBE Scale'))) {
+            if (hist && !animated(T.property('ADBE Rotate Z')) && !lay.parent) T.property('ADBE Rotate Z').setValue(L.rot);
+            if (hist && !animated(T.property('ADBE Scale'))) {
                 var sc1 = X.scale;
                 if (lay.parent) { var pk1 = compScale(lay.parent); sc1 = [sc1[0] / (pk1[0] || 1e-6), sc1[1] / (pk1[1] || 1e-6)]; }
                 T.property('ADBE Scale').setValue(sc1);
             }
-            if (!animated(T.property('ADBE Opacity'))) T.property('ADBE Opacity').setValue(clamp(L.opacity, 0, 100));
+            if (hist && !animated(T.property('ADBE Opacity'))) T.property('ADBE Opacity').setValue(clamp(L.opacity, 0, 100));
             try { lay.blendingMode = layerBlend(L.blend); } catch (e1) {}
             }
             // no link (an older import): the effects at the top are taken as Figma's, as many as Figma has now
             var nfx = refreshFigmaEffects(lay, L, ex.link ? ex.link.fx : -1);
-            if (L.key) linkLayer(lay, L, Oc || (ex.link && ex.link.o), nfx);
+            if (L.key) linkLayer(lay, L, Oc || (ex.link && ex.link.o), nfx, basePos);
         });
         UPD.updated++;
     }
@@ -1100,8 +1370,8 @@
         target.comment = keep.join('\r');
         if (lk) target.locked = true;
     }
-    function linkLayer(lay, L, origin, figmaFx) {
-        var p = lay.transform.position.value;
+    function linkLayer(lay, L, origin, figmaFx, figmaPos) {
+        var p = figmaPos || lay.transform.position.value;   // p: where Figma's state puts it (the user's own shift on top is not part of it)
         if (figmaFx === undefined) figmaFx = lay.property('ADBE Effect Parade').numProperties;   // at import every effect is Figma's
         var fc = defCenter(L);
         // f: where Figma had it (its centre, in this comp) and c: which comp — an animated layer later moves only by
@@ -1523,8 +1793,31 @@
         return FONT_LIST;
     }
 
+    /**
+     * A variable font with an optical-size axis (Inter 4, Roboto Flex, SF…): Figma draws each size with
+     * opsz = the size in px ("auto"), AE always takes the axis default (Inter: 14) — wider letters, looser spacing
+     * (measured: Inter 30 px 5 % wider). The instance for this size, the weight and other axes kept.
+     */
+    var opszCache = {};
+    function opticalInstance(font, size) {
+        try {
+            if (!font || !font.hasDesignAxes || !size) return font;
+            var axes = font.designAxesData, v = font.designVector, at = -1;
+            for (var i = 0; i < axes.length; i++) if (axes[i].tag === 'opsz') at = i;
+            if (at < 0 || !v) return font;
+            var want = Math.max(axes[at].min, Math.min(axes[at].max, Math.round(size * 2) / 2));
+            if (Math.abs(v[at] - want) < 0.01) return font;
+            var key = font.postScriptName + '@' + want;
+            if (key in opszCache) return opszCache[key];
+            var vec = v.slice(); vec[at] = want;
+            var ps = font.postScriptNameForDesignVector(vec), got = ps ? app.fonts.getFontsByPostScriptName(ps) : null;
+            return (opszCache[key] = got && got.length ? got[0] : font);
+        } catch (e) { return font; }
+    }
+
     function setFont(target, seg, font) {
         if (font) {
+            font = opticalInstance(font, seg.size);
             try { target.fontObject = font; } catch (e) { target.font = font.postScriptName; }
         } else if (font === undefined) {
             target.font = seg.family.replace(/\s+/g, '') + '-' + seg.style.replace(/\s+/g, '');   // AE < 24: best guess
@@ -1616,6 +1909,11 @@
             } catch (e) {}
         }
         prop.setValue(td);
+        if (T.stroke) {
+            // Figma strokes the text as a whole: AE's default ("per character") lets each letter's stroke cover the
+            // previous letter's fill — the text looks bolder and tighter. All strokes over / under all fills, like Figma
+            try { lay.property('ADBE Text Properties').property('ADBE Text More Options').property('ADBE Text Render Order').setValue(T.stroke.overFill ? 3 : 2); } catch (e) {}
+        }
 
         // per-character styles (AE 24.3+)
         if (segs.length > 1) {
@@ -1668,6 +1966,11 @@
         var r = null;
         try { r = lay.sourceRectAtTime(0, false); } catch (e) {}
         if (!fig || !r || r.width <= 0) return;      // whitespace etc: keep box placement
+        if (T.stroke && T.stroke.width > 0) {
+            // AE's box includes the stroke, Figma's outlines are the letters only: compare (and place) letters with letters
+            var hw = T.stroke.width / 2;
+            r = { left: r.left + hw, top: r.top + hw, width: Math.max(0.1, r.width - 2 * hw), height: Math.max(0.1, r.height - 2 * hw) };
+        }
 
         var k = T.align === 'CENTER' ? 0.5 : (T.align === 'RIGHT' ? 1 : 0);
         // underline/strike-through are in Figma's outlines but AE text has none: match tops instead of centres

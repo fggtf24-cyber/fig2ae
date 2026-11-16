@@ -167,6 +167,10 @@ $.global.F2A_HOST = (function () {
 
     function unprecompOne(c, P, notes, trim, made) {
         var src = P.source, n = src.numLayers, copies = [], i;
+        // the precomp is itself the track matte of another layer: unpacked, that layer's matte would be gone
+        var matteFor = [];
+        for (i = 1; i <= c.numLayers; i++) { var oL = c.layer(i); try { if (oL !== P && oL.hasTrackMatte && oL.trackMatteLayer === P) matteFor.push('"' + oL.name + '"'); } catch (eM) {} }
+        if (matteFor.length) { notes.push('"' + P.name + '" is the track matte of ' + matteFor.join(', ') + ' — left as a precomp so the mask keeps working'); return 0; }
         if (!n) { unlocked(P, function () { P.remove(); }); return 0; }
         // bottom first: every copy lands on top, so the stack keeps its order.
         // The copy is found as the layer that was not there before (Layer.id, AE 22+), else layer 1.
@@ -201,6 +205,24 @@ $.global.F2A_HOST = (function () {
                 if (o.hasTrackMatte && o.trackMatteLayer && o.trackMatteLayer.containingComp.id === src.id)
                     cpi.setTrackMatte(copies[o.trackMatteLayer.index], o.trackMatteType);
             } catch (e) {}
+        }
+        // the precomp layer had a track matte itself (a Figma "· masked" group, a mask of the user's): every layer that
+        // comes out of it is matted by it (AE 23+: one matte for many layers); the precomp's own matte sources stay
+        // mattes only — they are hidden anyway
+        var pMatte = null, pType = null;
+        try { if (P.hasTrackMatte && P.trackMatteLayer) { pMatte = P.trackMatteLayer; pType = P.trackMatteType; } } catch (eP) {}
+        if (pMatte) {
+            var isSource = {}, clash = 0;
+            for (i = 1; i <= n; i++) { try { var sl = src.layer(i); if (sl.hasTrackMatte && sl.trackMatteLayer) isSource[sl.trackMatteLayer.index] = 1; } catch (eS) {} }
+            for (i = 1; i <= n; i++) {
+                if (isSource[i]) continue;
+                var ci = copies[i];
+                try {
+                    if (ci.hasTrackMatte) { clash++; continue; }                 // has a matte of its own: AE takes one per layer
+                    ci.setTrackMatte(pMatte, pType);
+                } catch (eT) {}
+            }
+            if (clash) notes.push(clash + ' layer(s) of "' + P.name + '" have their own track matte — they could not also get "' + pMatte.name + '"');
         }
         var tr = P.property('ADBE Transform Group');
         var anim = animated(tr.property('ADBE Anchor Point')) || animated(tr.property('ADBE Position')) ||

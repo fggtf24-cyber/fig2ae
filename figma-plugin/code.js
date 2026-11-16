@@ -225,7 +225,8 @@ async function buildDoc(o) {
 
   CLIPS = []; BGS = []; culled = 0; STATS = { live: 0, offset: 0, outline: 0, clipped: 0, nullsSkipped: 0, bordersMerged: 0, bgSkipped: 0, emptyPaints: 0, emptyText: 0 };
   NO_RASTER = {};
-  if ((o.replace || o.update)) for (var nr = 0; nr < sel.length; nr++) NO_RASTER[sel[nr].id] = true;
+  // "Replace" makes the selection vectors whatever its mark; "Update" follows the mark: the star means a picture
+  if (o.replace) for (var nr = 0; nr < sel.length; nr++) NO_RASTER[sel[nr].id] = true;
   // replace: the comp is exactly what the selection renders (like a rasterized copy of it), never the frame around it
   var comp, scene = (o.replace || o.update) ? null : sceneOf(sel);
   if (sel.length === 1 && isContainer(sel[0]) && !scene && !o.replace) {   // update: a frame/group selected = its children, like its import
@@ -1198,8 +1199,18 @@ async function mattedPaint(node, M, o, P, outline, name) {
  * Every layer that draws one shape node, bottom->top, in space M, with neutral
  * node props. 'RASTER' only for video/pattern paints.
  */
+var MAX_PATH_CHARS = 150000;   // ~10 000 points; 190 K and 1.5 M made AE quit (Nov 2026 logs)
 async function nodeParts(node, M, o, selfOnly, which) {
   if (node.type === 'TEXT') return textParts(node, M, o);
+  // a contour with tens of thousands of points (a chart line traced from data, an outlined scan) crashes After Effects
+  // while it builds the shape (seen: 1.5 M characters of path, AE quit at that layer) — Figma's pixels of it instead
+  var pathChars = 0, gq;
+  for (gq = 0; gq < (node.fillGeometry || []).length; gq++) pathChars += String(node.fillGeometry[gq].data || '').length;
+  for (gq = 0; gq < (node.strokeGeometry || []).length; gq++) pathChars += String(node.strokeGeometry[gq].data || '').length;
+  if (pathChars > MAX_PATH_CHARS) {
+    warn(node, 'the shape has too many points for After Effects (' + Math.round(pathChars / 1000) + ' K of path data) — baked to PNG so AE does not crash; simplify it in Figma for vectors');
+    return 'RASTER';
+  }
   var w = node.width || 1, h = node.height || 1;
   var fills = paintList(node.fills, w, h, node);
   var strokes = paintList(node.strokes, w, h, node);
@@ -1447,6 +1458,8 @@ async function imagePixels(p) {
   for (var k in f) if (f[k]) filtered = true;
   var key = p.imageHash + (filtered ? JSON.stringify(f) : '');
   if (imageCache[key]) return imageCache[key];
+  // an image fill with no picture in it yet (empty placeholder, still uploading): Figma's own render is all there is
+  if (typeof p.imageHash !== 'string' || !p.imageHash) throw new Error('the image fill has no picture in Figma (empty or still loading)');
   var img = figma.getImageByHash(p.imageHash);
   if (!img) throw new Error('Figma has no image for this fill');
   var size = null, res = null;

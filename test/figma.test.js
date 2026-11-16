@@ -714,6 +714,33 @@ handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 2, hidden: false,
               assert.strictEqual(c.layers[0].type, 'shape', 'помеченный на растр — всё равно вектор');
               var pr = c.layers[0].groups[0].param;
               assert.ok(pr && pr.kind === 'rect' && pr.r === 20, 'таблетка со сглаживанием — AE Rectangle с Roundness');
+              // "Update in Ae" follows the star: a group marked for pixels comes as ONE picture (AE swaps the vectors for it)
+              var starKid = node({ type: 'RECTANGLE', name: 'Bar', x: 20, y: 20, width: 50, height: 10, fills: [solid(1, 0, 0)], fillGeometry: [{ data: rectPath(50, 10), windingRule: 'NONZERO' }] });
+              var starred = node({ type: 'FRAME', name: '* Card', x: 10, y: 10, width: 100, height: 40, fills: [solid(0, 0, 0)], children: [starKid],
+                fillGeometry: [{ data: rectPath(100, 40), windingRule: 'NONZERO' }],
+                exportAsync: function () { return Promise.resolve(solidPng(200, 80, [0, 0, 0, 255])); } });
+              starred.id = '5:1'; starKid.id = '5:2'; starred.parent = { type: 'PAGE' }; starKid.parent = starred;
+              starred.getPluginData = function (k) { return k === 'fig2ae-raster' ? 's2' : ''; };
+              figma.currentPage.selection = [starred];
+              return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 1, hidden: false, reference: false, update: true } }).then(function () {
+                var du = JSON.parse(result.json);
+                assert.strictEqual(du.comp.layers.length, 1, 'одна картинка');
+                assert.strictEqual(du.comp.layers[0].type, 'image');
+                assert.strictEqual(du.comp.layers[0].fid, '5:1', 'со связью на группу');
+              });
+            }).then(function () {
+              // a contour with ~40 000 points (a chart traced from data) goes as pixels: such a shape made AE quit
+              var huge = node({ type: 'VECTOR', name: 'Huge chart', x: 10, y: 10, width: 400, height: 100, fills: [solid(1, 0.8, 0)],
+                fillGeometry: [{ data: 'M0 0' + new Array(40001).join(' L1.25 3.75'), windingRule: 'NONZERO' }],
+                exportAsync: function () { return Promise.resolve(solidPng(400, 100, [255, 200, 0, 255])); } });
+              huge.parent = { type: 'PAGE' };
+              figma.currentPage.selection = [huge];
+              return handler({ type: 'export', opts: { fps: 25, duration: 2, scale: 1, hidden: false, reference: false } }).then(function () {
+                var dh = JSON.parse(result.json);
+                assert.strictEqual(dh.comp.layers[0].type, 'image', 'слишком сложный контур — картинкой');
+                assert.ok(dh.warnings.some(function (w) { return /too many points/.test(w); }), 'с предупреждением');
+              });
+            }).then(function () {
               // a coin icon: a frame with no fill and no clip, a glow with spread, a circle inside — the glow is a vector
               // copy of the circle (grown, blurred), and the precomp is big enough for the glow of what is inside it
               var coin = node({ type: 'ELLIPSE', name: 'coin', x: 507, y: 507, width: 28, height: 28, fills: [solid(0.2, 0.1, 0)],

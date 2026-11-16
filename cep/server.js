@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.17';
+var VERSION = '0.4.18';
 var updater = require(path.join(__dirname, 'updater.js'));
 var fonts = require(path.join(__dirname, 'fonts.js'));
 var telemetry = require(path.join(__dirname, 'telemetry.js'));
@@ -167,7 +167,7 @@ function start(evalHost, opts) {
     var win = opts.dir ? null : progressWindow(doc.comp.name);
     try {
       for (var waited = 0; ; waited += retryMs) {
-        var out = await evalHost(importCode(file, { target: doc.update === true ? 'update' : doc.replace === true ? 'replace' : set.target, parametric: set.parametric, precompGroups: set.precompGroups }));
+        var out = await evalHost(importCode(file, { target: doc.update === true ? 'update' : doc.replace === true ? 'replace' : set.target, place: set.target, parametric: set.parametric, precompGroups: set.precompGroups }));
         if (out !== BUSY) {
           var r = parseResult(out); r.file = file;
           if (moved && r.log) r.log.unshift('No access to "' + moved + '": images of this import are in "' + folder + '"');
