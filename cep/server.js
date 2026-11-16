@@ -12,7 +12,7 @@
  */
 var http = require('http'), fs = require('fs'), path = require('path'), os = require('os');
 var importer = require(path.join(__dirname, 'runtime.js'));
-var VERSION = '0.4.18';
+var VERSION = '0.4.19';
 var updater = require(path.join(__dirname, 'updater.js'));
 var fonts = require(path.join(__dirname, 'fonts.js'));
 var telemetry = require(path.join(__dirname, 'telemetry.js'));
@@ -103,13 +103,23 @@ function requestCancel(how) {
   fs.writeFileSync(path.join(settingsDir(), 'cancel.txt'), how === 'cancel' ? 'cancel' : 'stop');
 }
 
-/** the progress window over AE (progress.ps1, Windows): AE's own windows take no clicks while it imports */
+/** the progress window over AE: progress.ps1 (Windows), progress-mac.js (macOS) — AE's own windows take no clicks while it imports */
 function progressWindow(compName) {
-  if (process.platform !== 'win32') return null;
+  var name64 = Buffer.from(String(compName || ''), 'utf8').toString('base64'), cmd, args, opts = { stdio: 'ignore' };
+  if (process.platform === 'darwin') {
+    // a floating window over every app, JavaScript for Automation (built into macOS, nothing to install)
+    cmd = '/usr/bin/osascript';
+    args = ['-l', 'JavaScript', path.join(__dirname, 'progress-mac.js'), settingsDir(), name64];
+  } else if (process.platform === 'win32') {
+    cmd = 'powershell.exe';
+    args = ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+      '-File', path.join(__dirname, 'progress.ps1'), '-Dir', settingsDir(), '-Name64', name64];
+    opts.windowsHide = true;
+  } else return null;
   try {
-    return require('child_process').spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-      '-File', path.join(__dirname, 'progress.ps1'), '-Dir', settingsDir(), '-Name64', Buffer.from(String(compName || ''), 'utf8').toString('base64')],
-      { windowsHide: true, stdio: 'ignore' });
+    var p = require('child_process').spawn(cmd, args, opts);
+    p.on('error', function (e) { logEvent('error', 'progress window: ' + e.message); });   // a missing window never takes the server down
+    return p;
   } catch (e) { logEvent('error', 'progress window: ' + e.message); return null; }
 }
 
